@@ -1,0 +1,408 @@
+{
+ "version": 1,
+ "lim": 3.0,
+ "latent_dim": 2,
+ "image": [
+  28,
+  28
+ ],
+ "beta": {
+  "mode": "discrete",
+  "values": [
+   0.05,
+   0.1,
+   0.25,
+   1.0,
+   4.0,
+   8.0,
+   16.0
+  ]
+ },
+ "models": [
+  {
+   "name": "beta_0.05",
+   "beta": 0.05,
+   "cond": null,
+   "decoder": {
+    "path": "beta_0.05/decoder.bin",
+    "dtype": "float16",
+    "input": {
+     "z": 2,
+     "cond": 0
+    },
+    "layers": [
+     {
+      "type": "linear",
+      "in": 2,
+      "out": 256,
+      "w": 0,
+      "b": 512
+     },
+     {
+      "type": "relu"
+     },
+     {
+      "type": "linear",
+      "in": 256,
+      "out": 512,
+      "w": 768,
+      "b": 131840
+     },
+     {
+      "type": "relu"
+     },
+     {
+      "type": "linear",
+      "in": 512,
+      "out": 784,
+      "w": 132352,
+      "b": 533760
+     },
+     {
+      "type": "sigmoid"
+     }
+    ]
+   },
+   "evals": [
+    {
+     "beta": 0.05,
+     "recon": 130.61876831054687,
+     "kl": 11.502042865753173,
+     "mu": "beta_0.05/mu_0.bin",
+     "n": 3000
+    }
+   ],
+   "labels": "beta_0.05/labels.bin"
+  },
+  {
+   "name": "beta_0.1",
+   "beta": 0.1,
+   "cond": null,
+   "decoder": {
+    "path": "beta_0.1/decoder.bin",
+    "dtype": "float16",
+    "input": {
+     "z": 2,
+     "cond": 0
+    },
+    "layers": [
+     {
+      "type": "linear",
+      "in": 2,
+      "out": 256,
+      "w": 0,
+      "b": 512
+     },
+     {
+      "type": "relu"
+     },
+     {
+      "type": "linear",
+      "in": 256,
+      "out": 512,
+      "w": 768,
+      "b": 131840
+     },
+     {
+      "type": "relu"
+     },
+     {
+      "type": "linear",
+      "in": 512,
+      "out": 784,
+      "w": 132352,
+      "b": 533760
+     },
+     {
+      "type": "sigmoid"
+     }
+    ]
+   },
+   "evals": [
+    {
+     "beta": 0.1,
+     "recon": 131.0431869506836,
+     "kl": 10.360054779052735,
+     "mu": "beta_0.1/mu_0.bin",
+     "n": 3000
+    }
+   ],
+   "labels": "beta_0.1/labels.bin"
+  },
+  {
+   "name": "beta_0.25",
+   "beta": 0.25,
+   "cond": null,
+   "decoder": {
+    "path": "beta_0.25/decoder.bin",
+    "dtype": "float16",
+    "input": {
+     "z": 2,
+     "cond": 0
+    },
+    "layers": [
+     {
+      "type": "linear",
+      "in": 2,
+      "out": 256,
+      "w": 0,
+      "b": 512
+     },
+     {
+      "type": "relu"
+     },
+     {
+      "type": "linear",
+      "in": 256,
+      "out": 512,
+      "w": 768,
+      "b": 131840
+     },
+     {
+      "type": "relu"
+     },
+     {
+      "type": "linear",
+      "in": 512,
+      "out": 784,
+      "w": 132352,
+      "b": 533760
+     },
+     {
+      "type": "sigmoid"
+     }
+    ]
+   },
+   "evals": [
+    {
+     "beta": 0.25,
+     "recon": 131.49643096923828,
+     "kl": 8.693576526641845,
+     "mu": "beta_0.25/mu_0.bin",
+     "n": 3000
+    }
+   ],
+   "labels": "beta_0.25/labels.bin"
+  },
+  {
+   "name": "beta_1",
+   "beta": 1.0,
+   "cond": null,
+   "decoder": {
+    "path": "beta_1/decoder.bin",
+    "dtype": "float16",
+    "input": {
+     "z": 2,
+     "cond": 0
+    },
+    "layers": [
+     {
+      "type": "linear",
+      "in": 2,
+      "out": 256,
+      "w": 0,
+      "b": 512
+     },
+     {
+      "type": "relu"
+     },
+     {
+      "type": "linear",
+      "in": 256,
+      "out": 512,
+      "w": 768,
+      "b": 131840
+     },
+     {
+      "type": "relu"
+     },
+     {
+      "type": "linear",
+      "in": 512,
+      "out": 784,
+      "w": 132352,
+      "b": 533760
+     },
+     {
+      "type": "sigmoid"
+     }
+    ]
+   },
+   "evals": [
+    {
+     "beta": 1.0,
+     "recon": 132.3570343017578,
+     "kl": 7.062686920166016,
+     "mu": "beta_1/mu_0.bin",
+     "n": 3000
+    }
+   ],
+   "labels": "beta_1/labels.bin"
+  },
+  {
+   "name": "beta_4",
+   "beta": 4.0,
+   "cond": null,
+   "decoder": {
+    "path": "beta_4/decoder.bin",
+    "dtype": "float16",
+    "input": {
+     "z": 2,
+     "cond": 0
+    },
+    "layers": [
+     {
+      "type": "linear",
+      "in": 2,
+      "out": 256,
+      "w": 0,
+      "b": 512
+     },
+     {
+      "type": "relu"
+     },
+     {
+      "type": "linear",
+      "in": 256,
+      "out": 512,
+      "w": 768,
+      "b": 131840
+     },
+     {
+      "type": "relu"
+     },
+     {
+      "type": "linear",
+      "in": 512,
+      "out": 784,
+      "w": 132352,
+      "b": 533760
+     },
+     {
+      "type": "sigmoid"
+     }
+    ]
+   },
+   "evals": [
+    {
+     "beta": 4.0,
+     "recon": 137.4492919921875,
+     "kl": 5.035598468780518,
+     "mu": "beta_4/mu_0.bin",
+     "n": 3000
+    }
+   ],
+   "labels": "beta_4/labels.bin"
+  },
+  {
+   "name": "beta_8",
+   "beta": 8.0,
+   "cond": null,
+   "decoder": {
+    "path": "beta_8/decoder.bin",
+    "dtype": "float16",
+    "input": {
+     "z": 2,
+     "cond": 0
+    },
+    "layers": [
+     {
+      "type": "linear",
+      "in": 2,
+      "out": 256,
+      "w": 0,
+      "b": 512
+     },
+     {
+      "type": "relu"
+     },
+     {
+      "type": "linear",
+      "in": 256,
+      "out": 512,
+      "w": 768,
+      "b": 131840
+     },
+     {
+      "type": "relu"
+     },
+     {
+      "type": "linear",
+      "in": 512,
+      "out": 784,
+      "w": 132352,
+      "b": 533760
+     },
+     {
+      "type": "sigmoid"
+     }
+    ]
+   },
+   "evals": [
+    {
+     "beta": 8.0,
+     "recon": 145.61770477294922,
+     "kl": 3.7003498315811156,
+     "mu": "beta_8/mu_0.bin",
+     "n": 3000
+    }
+   ],
+   "labels": "beta_8/labels.bin"
+  },
+  {
+   "name": "beta_16",
+   "beta": 16.0,
+   "cond": null,
+   "decoder": {
+    "path": "beta_16/decoder.bin",
+    "dtype": "float16",
+    "input": {
+     "z": 2,
+     "cond": 0
+    },
+    "layers": [
+     {
+      "type": "linear",
+      "in": 2,
+      "out": 256,
+      "w": 0,
+      "b": 512
+     },
+     {
+      "type": "relu"
+     },
+     {
+      "type": "linear",
+      "in": 256,
+      "out": 512,
+      "w": 768,
+      "b": 131840
+     },
+     {
+      "type": "relu"
+     },
+     {
+      "type": "linear",
+      "in": 512,
+      "out": 784,
+      "w": 132352,
+      "b": 533760
+     },
+     {
+      "type": "sigmoid"
+     }
+    ]
+   },
+   "evals": [
+    {
+     "beta": 16.0,
+     "recon": 173.82212677001954,
+     "kl": 1.535001564025879,
+     "mu": "beta_16/mu_0.bin",
+     "n": 3000
+    }
+   ],
+   "labels": "beta_16/labels.bin"
+  }
+ ]
+}

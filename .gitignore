@@ -144,7 +144,7 @@ venv.bak/
 .ropeproject
 
 # mkdocs documentation
-/site
+# /site  (disabled: site/ holds the Pages entry point of this project)
 
 # mypy
 .mypy_cache/
@@ -179,3 +179,12 @@ cython_debug/
 #  refer to https://docs.cursor.com/context/ignore-files
 .cursorignore
 .cursorindexingignore
+# ---- VAE demo
+# MNIST is downloaded by torchvision on first use
+data/
+# the original prototype, kept locally for reference
+reference/
+# regenerable run artifacts (checkpoints, history.json, eval.npz are tracked)
+runs/**/*.png
+runs/*.png
+runs/**/grid_uint8.npy

@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VAE Latent Pad</title>
+<link rel="stylesheet" href="latent_pad.css">
+<style>
+  /* The widget reads JupyterLab's theme variables; define them for the standalone page. */
+  :root {
+    --jp-ui-font-color1: #1f2328; --jp-ui-font-color2: #59636e;
+    --jp-border-color1: #d1d9e0; --jp-layout-color0: #ffffff; --jp-layout-color2: #f3f4f6;
+    --page-bg: #fbfbfa;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --jp-ui-font-color1: #e6e6e6; --jp-ui-font-color2: #a0a6ad;
+      --jp-border-color1: #3a3f45; --jp-layout-color0: #17191c; --jp-layout-color2: #2a2e33;
+      --page-bg: #111214;
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --jp-ui-font-color1: #e6e6e6; --jp-ui-font-color2: #a0a6ad;
+    --jp-border-color1: #3a3f45; --jp-layout-color0: #17191c; --jp-layout-color2: #2a2e33;
+    --page-bg: #111214;
+    color-scheme: dark;
+  }
+  body {
+    margin: 0; background: var(--page-bg); color: var(--jp-ui-font-color1);
+    font: 15px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  main { max-width: 780px; margin: 0 auto; padding: 32px 16px 64px; }
+  h1 { font-size: 26px; margin: 0 0 4px; }
+  .lede { color: var(--jp-ui-font-color2); margin: 0 0 24px; max-width: 62ch; }
+  ul { padding-left: 20px; max-width: 64ch; }
+  li { margin: 4px 0; }
+  #pad { margin: 8px 0 32px; min-height: 420px; }
+  code { font-size: 0.92em; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Walking around a VAE's latent space</h1>
+  <p class="lede">A variational autoencoder with a 2-D latent, trained on MNIST. Every point
+    of the plane is a code <i>z</i>; the decoder turns it into an image, right here in your browser.
+    The β slider swaps in models trained with a stronger or weaker pull toward the prior N(0, I).</p>
+
+  <div id="pad">Loading model…</div>
+
+  <h2>Things to try</h2>
+  <ul>
+    <li>Drag slowly across the plane at β = 1. Digits morph into each other: the latent space is a
+      continuous map, and nearby codes decode to similar images.</li>
+    <li>Switch the background to <i>decoded grid</i> to see the whole map at once.</li>
+    <li>At small β, digits are sharp, but the codes (scatter) spread out in clusters with gaps.
+      Drag into a gap inside the 86% circle: the image there is often a blur no digit owns.</li>
+    <li>Raise β. Reconstructions get blurrier (recon ↑) as the codes are squeezed toward the prior
+      (KL ↓), but the prior samples at the bottom more often look like real digits. More of the
+      prior's mass decodes to something plausible.</li>
+    <li>At the largest β, whole digit classes vanish: the model gives up on information to match the prior.</li>
+  </ul>
+</main>
+<script type="module">
+  import { mount, urlSource } from "./latent_pad.js";
+  const el = document.getElementById("pad");
+  mount(el, urlSource("./bundle/"), { beta: 1 }).catch((err) => {
+    el.textContent = "Could not load the model: " + err.message;
+  });
+</script>
+</body>
+</html>

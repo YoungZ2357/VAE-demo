@@ -1,0 +1,558 @@
+// Latent pad: decode a 2-D VAE latent live in the browser.
+//
+// One file, no build step, used two ways:
+//   - notebook:    anywidget default export (data arrives through traitlets)
+//   - static site: import { mount, urlSource } from "./latent_pad.js"
+// Data format: see vae_demo/export.py.
+
+const TAB10 = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd",
+               "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf"];
+const PRIOR_COLS = 16, PRIOR_ROWS = 4, PRIOR_SEED = 7;
+const MANIFOLD_N = 16;
+
+// ------------------------------------------------------------------ data sources
+function toArrayBuffer(v) {
+  if (v instanceof ArrayBuffer) return v;
+  if (ArrayBuffer.isView(v)) return v.buffer.slice(v.byteOffset, v.byteOffset + v.byteLength);
+  throw new Error("expected binary buffer");
+}
+
+/** Bundle served as static files: `base` is the directory holding manifest.json. */
+export function urlSource(base) {
+  const root = new URL(base.endsWith("/") ? base : base + "/", document.baseURI);
+  return {
+    async getManifest() {
+      const r = await fetch(new URL("manifest.json", root));
+      if (!r.ok) throw new Error(`manifest.json: HTTP ${r.status}`);
+      return r.json();
+    },
+    async getBuffer(path) {
+      const r = await fetch(new URL(path, root));
+      if (!r.ok) throw new Error(`${path}: HTTP ${r.status}`);
+      return r.arrayBuffer();
+    },
+  };
+}
+
+function traitletSource(model) {
+  return {
+    async getManifest() { return model.get("manifest"); },
+    async getBuffer(path) {
+      const v = model.get("buffers")[path];
+      if (v == null) throw new Error(`missing buffer ${path}`);
+      return toArrayBuffer(v);
+    },
+  };
+}
+
+// ------------------------------------------------------------------ numerics
+function halfToFloat32(buf) {
+  const h = new Uint16Array(buf), f = new Float32Array(h.length);
+  for (let i = 0; i < h.length; i++) {
+    const x = h[i], s = x & 0x8000 ? -1 : 1, e = (x >> 10) & 0x1f, m = x & 0x3ff;
+    f[i] = e === 0 ? s * m * 2 ** -24 : e === 31 ? (m ? NaN : s * Infinity)
+                                                 : s * (1 + m / 1024) * 2 ** (e - 15);
+  }
+  return f;
+}
+
+/** Same formula as vae_demo/conditioning.py:beta_features. */
+export function betaFeatures(beta, cond) {
+  if (cond.type !== "log_beta") throw new Error(`unknown cond type ${cond.type}`);
+  return new Float32Array([(Math.log(beta) - cond.center) / cond.scale]);
+}
+
+/** MLP interpreted from the manifest's layer list. */
+export class Decoder {
+  constructor(spec, buffer) {
+    this.spec = spec;
+    this.params = spec.dtype === "float16" ? halfToFloat32(buffer) : new Float32Array(buffer);
+    this.zDim = spec.input.z;
+    this.cDim = spec.input.cond || 0;
+    const last = spec.layers.filter((l) => l.type === "linear").pop();
+    this.outDim = last.out;
+  }
+
+  /** z: Float32Array [n * zDim]; c: Float32Array [cDim] or null. Returns [n * outDim]. */
+  forward(z, n, c = null) {
+    const inDim = this.zDim + this.cDim;
+    let x = new Float32Array(n * inDim);
+    for (let i = 0; i < n; i++) {
+      for (let k = 0; k < this.zDim; k++) x[i * inDim + k] = z[i * this.zDim + k];
+      for (let k = 0; k < this.cDim; k++) x[i * inDim + this.zDim + k] = c[k];
+    }
+    const P = this.params;
+    for (const L of this.spec.layers) {
+      if (L.type === "linear") {
+        const y = new Float32Array(n * L.out);
+        for (let i = 0; i < n; i++) {
+          const xi = i * L.in, yi = i * L.out;
+          for (let j = 0; j < L.out; j++) {
+            let s = P[L.b + j];
+            const w = L.w + j * L.in;
+            for (let k = 0; k < L.in; k++) s += P[w + k] * x[xi + k];
+            y[yi + j] = s;
+          }
+        }
+        x = y;
+      } else if (L.type === "relu") {
+        for (let i = 0; i < x.length; i++) if (x[i] < 0) x[i] = 0;
+      } else if (L.type === "sigmoid") {
+        for (let i = 0; i < x.length; i++) x[i] = 1 / (1 + Math.exp(-x[i]));
+      } else {
+        throw new Error(`unknown layer type ${L.type}`);
+      }
+    }
+    return x;
+  }
+}
+
+function mulberry32(a) {
+  return () => {
+    a |= 0; a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function gaussianSamples(n, seed) {
+  const rnd = mulberry32(seed), out = new Float32Array(2 * n);
+  for (let i = 0; i < n; i++) {
+    const u = Math.max(rnd(), 1e-12), v = rnd(), r = Math.sqrt(-2 * Math.log(u));
+    out[2 * i] = r * Math.cos(2 * Math.PI * v);
+    out[2 * i + 1] = r * Math.sin(2 * Math.PI * v);
+  }
+  return out;
+}
+
+const priorMass = (r) => 1 - Math.exp(-r * r / 2);  // P(|z| <= r) for a 2-D standard normal
+const fmtBeta = (b) => (b >= 10 ? b.toFixed(0) : b >= 1 ? +b.toFixed(2) + "" : +b.toPrecision(2) + "");
+
+// ------------------------------------------------------------------ DOM helpers
+function h(tag, attrs = {}, ...kids) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === "class") e.className = v;
+    else if (k.startsWith("on")) e.addEventListener(k.slice(2), v);
+    else e.setAttribute(k, v);
+  }
+  for (const k of kids) e.append(k);
+  return e;
+}
+
+function paintDigits(ctx, pixels, n, cols, size = 28) {
+  const rows = Math.ceil(n / cols);
+  const img = ctx.createImageData(cols * size, rows * size);
+  for (let s = 0; s < n; s++) {
+    const ox = (s % cols) * size, oy = Math.floor(s / cols) * size;
+    for (let p = 0; p < size * size; p++) {
+      const v = Math.round(pixels[s * size * size + p] * 255);
+      const q = 4 * ((oy + Math.floor(p / size)) * cols * size + ox + (p % size));
+      img.data[q] = img.data[q + 1] = img.data[q + 2] = v;
+      img.data[q + 3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+}
+
+// ------------------------------------------------------------------ the widget
+/**
+ * Mount the pad into `el`. `source` provides getManifest() / getBuffer(path).
+ * opts: {z, beta, background, onChange({z, beta, background})}
+ * Returns a controller {setZ, setBeta, setBackground, decodeAt, destroy}.
+ */
+export async function mount(el, source, opts = {}) {
+  const manifest = await source.getManifest();
+  const lim = manifest.lim, betaSpec = manifest.beta;
+  const discrete = betaSpec.mode === "discrete";
+  const state = {
+    z: opts.z ? [...opts.z] : [0, 0],
+    beta: opts.beta ?? 1,
+    background: opts.background || "scatter",
+    showPrior: false,
+    hoverPrior: -1,
+  };
+  if (discrete) state.beta = nearestValue(betaSpec.values, state.beta);
+  else state.beta = Math.min(betaSpec.max, Math.max(betaSpec.min, state.beta));
+
+  const cache = new Map();
+  const load = (key, fn) => { if (!cache.has(key)) cache.set(key, fn()); return cache.get(key); };
+  const priorZ = gaussianSamples(PRIOR_COLS * PRIOR_ROWS, PRIOR_SEED);
+
+  // ---- layout
+  const pad = h("canvas", { class: "lp-pad", tabindex: "0",
+    "aria-label": "Latent plane. Drag, or use arrow keys, to move z." });
+  const out = h("canvas", { class: "lp-out", width: "28", height: "28" });
+  const prior = h("canvas", { class: "lp-prior", width: String(PRIOR_COLS * 28),
+                              height: String(PRIOR_ROWS * 28) });
+  const zText = h("div", { class: "lp-z" });
+  const massText = h("div", { class: "lp-muted" });
+  const betaText = h("span", { class: "lp-beta-value" });
+  const metricText = h("div", { class: "lp-muted lp-metrics" });
+  const status = h("div", { class: "lp-status" });
+  const slider = h("input", { type: "range", class: "lp-slider", "aria-label": "beta" });
+  const ticks = h("div", { class: "lp-ticks" });
+  const legend = h("div", { class: "lp-legend" },
+    ...TAB10.map((c, d) => h("span", {}, h("i", { style: `background:${c}` }), String(d))));
+  const bgButtons = ["scatter", "manifold", "none"].map((b) =>
+    h("button", { type: "button", "data-bg": b, onclick: () => setBackground(b, true) },
+      { scatter: "μ(x) scatter", manifold: "decoded grid", none: "none" }[b]));
+  const priorToggle = h("input", { type: "checkbox" });
+  priorToggle.addEventListener("change", () => { state.showPrior = priorToggle.checked; drawPad(); });
+
+  const root = h("div", { class: "lp-root" },
+    h("div", { class: "lp-main" },
+      h("div", { class: "lp-left" }, pad, legend),
+      h("div", { class: "lp-right" },
+        h("div", { class: "lp-label" }, "decoder(z)"), out, zText, massText,
+        h("div", { class: "lp-label lp-gap" }, "background"),
+        h("div", { class: "lp-seg" }, ...bgButtons),
+        h("label", { class: "lp-check" }, priorToggle, " mark prior samples on the plane"))),
+    h("div", { class: "lp-beta" },
+      h("div", { class: "lp-beta-head" }, h("span", { class: "lp-label" }, "β"), betaText, metricText),
+      slider, ticks),
+    h("div", { class: "lp-label lp-gap" },
+      `prior samples: decoder(z), z ~ N(0, I), same ${PRIOR_COLS * PRIOR_ROWS} z for every β — click one to jump there`),
+    prior, status);
+  el.replaceChildren(root);
+
+  // ---- β slider
+  const tickBetas = discrete ? betaSpec.values
+    : [0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 4, 8, 16, 32, 64, 100]
+        .filter((b) => b >= betaSpec.min * 0.999 && b <= betaSpec.max * 1.001);
+  const toSlider = (b) => discrete ? betaSpec.values.indexOf(b)
+    : 1000 * Math.log(b / betaSpec.min) / Math.log(betaSpec.max / betaSpec.min);
+  const fromSlider = (v) => discrete ? betaSpec.values[+v]
+    : betaSpec.min * (betaSpec.max / betaSpec.min) ** (v / 1000);
+  slider.min = 0;
+  slider.max = discrete ? betaSpec.values.length - 1 : 1000;
+  slider.step = 1;
+  for (const b of tickBetas) {
+    const t = h("button", { type: "button", onclick: () => setBeta(b, true) }, fmtBeta(b));
+    // discrete ticks are evenly spaced (one per trained model); continuous ones sit on the log axis
+    t.style.left = `${(100 * toSlider(b)) / slider.max}%`;
+    ticks.append(t);
+  }
+  slider.addEventListener("input", () => setBeta(fromSlider(slider.value), true));
+
+  // ---- model access
+  function modelFor(beta) {
+    return discrete ? manifest.models[betaSpec.values.indexOf(beta)] : manifest.models[0];
+  }
+  async function decoderFor(m) {
+    return load("dec:" + m.name, async () => new Decoder(m.decoder, await source.getBuffer(m.decoder.path)));
+  }
+  function nearestEval(m, beta) {
+    return m.evals.reduce((a, e) => Math.abs(Math.log(e.beta / beta)) < Math.abs(Math.log(a.beta / beta)) ? e : a);
+  }
+  async function latentsFor(m, ev) {
+    const [mu, lab] = await Promise.all([
+      load("buf:" + ev.mu, () => source.getBuffer(ev.mu).then((b) => new Float32Array(b))),
+      load("buf:" + m.labels, () => source.getBuffer(m.labels).then((b) => new Uint8Array(b))),
+    ]);
+    return { mu, lab };
+  }
+  function metricsAt(m, beta) {
+    if (discrete || m.evals.length === 1) return { ...m.evals[0], exact: true };
+    const ev = [...m.evals].sort((a, b) => a.beta - b.beta);
+    const t = Math.log(beta);
+    let i = ev.findIndex((e) => e.beta >= beta);
+    if (i <= 0) return { ...ev[Math.max(i, 0)], exact: i === 0 && ev[0].beta === beta };
+    const a = ev[i - 1], b = ev[i], w = (t - Math.log(a.beta)) / (Math.log(b.beta) - Math.log(a.beta));
+    return { recon: a.recon + w * (b.recon - a.recon), kl: a.kl + w * (b.kl - a.kl), exact: false };
+  }
+
+  // ---- current β assets
+  let cur = null;          // {m, dec, c, lat, ev}
+  let bg = null;           // offscreen canvas for the background layer
+  let version = 0;
+
+  async function refreshBeta() {
+    const v = ++version, beta = state.beta, m = modelFor(beta);
+    status.textContent = "";
+    try {
+      const dec = await decoderFor(m);
+      const ev = nearestEval(m, beta);
+      const lat = await latentsFor(m, ev);
+      if (v !== version) return;  // a newer β arrived meanwhile
+      cur = { m, dec, ev, lat, c: m.cond ? betaFeatures(beta, m.cond) : null };
+      renderBackground();
+      renderPrior();
+      drawPad();
+      drawOut();
+      updateText();
+    } catch (err) {
+      status.textContent = String(err);
+      throw err;
+    }
+  }
+
+  // ---- drawing
+  const css = (name) => getComputedStyle(root).getPropertyValue(name).trim();
+  const toPx = (z1, z2, S) => [((z1 + lim) / (2 * lim)) * S, ((lim - z2) / (2 * lim)) * S];
+  const toZ = (x, y, S) => [(x / S) * 2 * lim - lim, lim - (y / S) * 2 * lim];
+
+  function sizePad() {
+    const dpr = window.devicePixelRatio || 1;
+    const S = Math.round((pad.clientWidth || 400) * dpr);
+    if (pad.width !== S) { pad.width = pad.height = S; renderBackground(); }
+    return S;
+  }
+
+  function renderBackground() {
+    if (!cur) return;
+    const S = pad.width;
+    bg = document.createElement("canvas");
+    bg.width = bg.height = S;
+    const g = bg.getContext("2d");
+    if (state.background === "scatter") {
+      const { mu, lab } = cur.lat, r = Math.max(1.2, S / 300);
+      g.globalAlpha = 0.6;
+      for (let i = 0; i < lab.length; i++) {
+        const [x, y] = toPx(mu[2 * i], mu[2 * i + 1], S);
+        g.fillStyle = TAB10[lab[i]];
+        g.beginPath(); g.arc(x, y, r, 0, 2 * Math.PI); g.fill();
+      }
+    } else if (state.background === "manifold") {
+      const n = MANIFOLD_N, zs = new Float32Array(2 * n * n);
+      for (let r = 0; r < n; r++) for (let c = 0; c < n; c++) {
+        // cell centres, row 0 = top = largest z2 (same orientation as the pad)
+        zs[2 * (r * n + c)] = -lim + (2 * lim * (c + 0.5)) / n;
+        zs[2 * (r * n + c) + 1] = lim - (2 * lim * (r + 0.5)) / n;
+      }
+      const tile = document.createElement("canvas");
+      tile.width = tile.height = n * 28;
+      paintDigits(tile.getContext("2d"), cur.dec.forward(zs, n * n, cur.c), n * n, n);
+      g.imageSmoothingEnabled = true;
+      g.drawImage(tile, 0, 0, S, S);
+    }
+  }
+
+  function drawPad() {
+    const S = sizePad(), g = pad.getContext("2d"), dpr = window.devicePixelRatio || 1;
+    const dark = state.background === "manifold";
+    g.fillStyle = dark ? "#000" : css("--lp-pad-bg") || "#fff";
+    g.fillRect(0, 0, S, S);
+    if (bg) g.drawImage(bg, 0, 0);
+    const ink = dark ? "rgba(255,255,255,0.75)" : css("--lp-fg") || "#222";
+    const faint = dark ? "rgba(255,255,255,0.18)" : css("--lp-grid") || "rgba(0,0,0,0.1)";
+
+    // grid + axes
+    g.lineWidth = dpr;
+    g.strokeStyle = faint;
+    for (let t = Math.ceil(-lim); t <= lim; t++) {
+      const [x] = toPx(t, 0, S), [, y] = toPx(0, t, S);
+      g.beginPath(); g.moveTo(x, 0); g.lineTo(x, S); g.moveTo(0, y); g.lineTo(S, y); g.stroke();
+    }
+    g.fillStyle = ink;
+    g.font = `${11 * dpr}px system-ui, sans-serif`;
+    g.globalAlpha = 0.7;
+    for (let t = Math.ceil(-lim); t <= lim; t++) {
+      if (t === 0) continue;
+      const [x, y0] = toPx(t, 0, S);
+      g.fillText(String(t), x + 2 * dpr, y0 - 3 * dpr);
+    }
+    g.fillText("z1 →", S - 34 * dpr, toPx(0, 0, S)[1] + 14 * dpr);
+    g.fillText("z2 ↑", toPx(0, 0, S)[0] + 4 * dpr, 13 * dpr);
+    g.globalAlpha = 1;
+
+    // prior contours: radius r holds 1 - exp(-r²/2) of N(0, I)
+    const [cx, cy] = toPx(0, 0, S), unit = S / (2 * lim);
+    g.setLineDash([5 * dpr, 4 * dpr]);
+    g.strokeStyle = ink;
+    g.lineWidth = 1.2 * dpr;
+    for (const r of [1, 2, 3]) {
+      if (r > lim * 1.42) continue;
+      g.beginPath(); g.arc(cx, cy, r * unit, 0, 2 * Math.PI); g.stroke();
+      g.fillText(`${Math.round(100 * priorMass(r))}%`, cx + r * unit * 0.707 + 3 * dpr, cy - r * unit * 0.707 - 3 * dpr);
+    }
+    g.setLineDash([]);
+
+    // prior sample markers
+    if (state.showPrior || state.hoverPrior >= 0) {
+      for (let i = 0; i < PRIOR_COLS * PRIOR_ROWS; i++) {
+        if (!state.showPrior && i !== state.hoverPrior) continue;
+        const [x, y] = toPx(priorZ[2 * i], priorZ[2 * i + 1], S), s = (i === state.hoverPrior ? 6 : 3.5) * dpr;
+        g.strokeStyle = i === state.hoverPrior ? css("--lp-accent") || "#e8590c" : ink;
+        g.lineWidth = (i === state.hoverPrior ? 2.5 : 1.5) * dpr;
+        g.beginPath(); g.moveTo(x - s, y - s); g.lineTo(x + s, y + s);
+        g.moveTo(x - s, y + s); g.lineTo(x + s, y - s); g.stroke();
+      }
+    }
+
+    // the cursor
+    const [x, y] = toPx(state.z[0], state.z[1], S), R = 9 * dpr;
+    g.lineWidth = 4 * dpr; g.strokeStyle = dark ? "#000" : "#fff";
+    g.beginPath(); g.arc(x, y, R, 0, 2 * Math.PI); g.stroke();
+    g.lineWidth = 2 * dpr; g.strokeStyle = css("--lp-accent") || "#e8590c";
+    g.beginPath(); g.arc(x, y, R, 0, 2 * Math.PI);
+    g.moveTo(x - R * 1.8, y); g.lineTo(x - R * 0.5, y); g.moveTo(x + R * 0.5, y); g.lineTo(x + R * 1.8, y);
+    g.moveTo(x, y - R * 1.8); g.lineTo(x, y - R * 0.5); g.moveTo(x, y + R * 0.5); g.lineTo(x, y + R * 1.8);
+    g.stroke();
+  }
+
+  function drawOut() {
+    if (!cur) return;
+    paintDigits(out.getContext("2d"), cur.dec.forward(new Float32Array(state.z), 1, cur.c), 1, 1);
+  }
+
+  function renderPrior() {
+    const n = PRIOR_COLS * PRIOR_ROWS;
+    paintDigits(prior.getContext("2d"), cur.dec.forward(priorZ, n, cur.c), n, PRIOR_COLS);
+  }
+
+  function updateText() {
+    const [a, b] = state.z, r = Math.hypot(a, b);
+    zText.textContent = `z = (${a.toFixed(2)}, ${b.toFixed(2)})`;
+    massText.textContent = `|z| = ${r.toFixed(2)} · ${(100 * (1 - priorMass(r))).toFixed(1)}% of prior mass lies farther out`;
+    betaText.textContent = fmtBeta(state.beta);
+    if (cur) {
+      const mt = metricsAt(cur.m, state.beta);
+      metricText.textContent = `test recon ${mt.recon.toFixed(1)} nats · KL ${mt.kl.toFixed(2)} nats` +
+        (mt.exact ? "" : " (interpolated)");
+    }
+    slider.value = toSlider(state.beta);
+    for (const t of ticks.children) t.classList.toggle("lp-on", discrete && t.textContent === fmtBeta(state.beta));
+    for (const btn of bgButtons) btn.classList.toggle("lp-on", btn.dataset.bg === state.background);
+  }
+
+  // ---- frame scheduling: pointer moves only mark dirty, one decode per animation frame
+  let frame = 0, betaDirty = false;
+  function schedule() {
+    if (frame) return;
+    frame = requestAnimationFrame(() => {
+      frame = 0;
+      if (betaDirty) { betaDirty = false; refreshBeta(); }
+      else { drawPad(); drawOut(); updateText(); }
+    });
+  }
+
+  const notify = () => opts.onChange && opts.onChange({ z: [...state.z], beta: state.beta, background: state.background });
+  const clampZ = (v) => Math.max(-lim, Math.min(lim, v));
+
+  function setZ(z, fromUser = false) {
+    state.z = [clampZ(+z[0]), clampZ(+z[1])];
+    schedule();
+    if (fromUser) notify();
+  }
+  function setBeta(beta, fromUser = false) {
+    beta = discrete ? nearestValue(betaSpec.values, +beta)
+                    : Math.min(betaSpec.max, Math.max(betaSpec.min, +beta));
+    if (beta === state.beta && cur) return;
+    state.beta = beta;
+    betaDirty = true;
+    updateText();
+    schedule();
+    if (fromUser) notify();
+  }
+  function setBackground(b, fromUser = false) {
+    if (b === state.background) return;
+    state.background = b;
+    renderBackground();
+    drawPad();
+    updateText();
+    if (fromUser) notify();
+  }
+
+  // ---- interaction
+  let dragging = false;
+  const zFromEvent = (e) => {
+    const r = pad.getBoundingClientRect();
+    return toZ(e.clientX - r.left, e.clientY - r.top, r.width);
+  };
+  pad.addEventListener("pointerdown", (e) => {
+    dragging = true; pad.setPointerCapture(e.pointerId); pad.focus(); setZ(zFromEvent(e), true);
+  });
+  pad.addEventListener("pointermove", (e) => { if (dragging) setZ(zFromEvent(e), true); });
+  const end = () => { dragging = false; };
+  pad.addEventListener("pointerup", end);
+  pad.addEventListener("pointercancel", end);
+  pad.addEventListener("keydown", (e) => {
+    const step = e.shiftKey ? 0.25 : 0.05;
+    const d = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, step], ArrowDown: [0, -step] }[e.key];
+    if (!d) return;
+    e.preventDefault();
+    setZ([state.z[0] + d[0], state.z[1] + d[1]], true);
+  });
+  const priorIndex = (e) => {
+    const r = prior.getBoundingClientRect();
+    const c = Math.floor(((e.clientX - r.left) / r.width) * PRIOR_COLS);
+    const w = Math.floor(((e.clientY - r.top) / r.height) * PRIOR_ROWS);
+    return c >= 0 && c < PRIOR_COLS && w >= 0 && w < PRIOR_ROWS ? w * PRIOR_COLS + c : -1;
+  };
+  prior.addEventListener("pointermove", (e) => {
+    const i = priorIndex(e);
+    if (i !== state.hoverPrior) { state.hoverPrior = i; drawPad(); }
+  });
+  prior.addEventListener("pointerleave", () => { state.hoverPrior = -1; drawPad(); });
+  prior.addEventListener("click", (e) => {
+    const i = priorIndex(e);
+    if (i >= 0) setZ([priorZ[2 * i], priorZ[2 * i + 1]], true);
+  });
+
+  const ro = new ResizeObserver(() => { if (cur) drawPad(); });
+  ro.observe(pad);
+  const mq = window.matchMedia("(prefers-color-scheme: dark)");
+  const onScheme = () => drawPad();
+  mq.addEventListener("change", onScheme);
+
+  updateText();
+  await refreshBeta();
+
+  return {
+    setZ: (z) => setZ(z),
+    setBeta: (b) => setBeta(b),
+    setBackground: (b) => setBackground(b),
+    /** For checking against the Python decoder: decodes z at the current β. */
+    decodeAt: async (z, beta = state.beta) => {
+      const m = modelFor(discrete ? nearestValue(betaSpec.values, beta) : state.beta);
+      const dec = await decoderFor(m);
+      return dec.forward(new Float32Array(z), 1, m.cond ? betaFeatures(beta, m.cond) : null);
+    },
+    get state() { return { ...state, z: [...state.z] }; },
+    destroy() { ro.disconnect(); mq.removeEventListener("change", onScheme); el.replaceChildren(); },
+  };
+}
+
+function nearestValue(values, v) {
+  return values.reduce((a, b) => (Math.abs(Math.log(b / v)) < Math.abs(Math.log(a / v)) ? b : a));
+}
+
+// ------------------------------------------------------------------ anywidget entry point
+export default {
+  async render({ model, el }) {
+    // Dragging fires many changes per second; sync back to Python at most every 80 ms.
+    let pending = null, timer = 0;
+    const flush = () => {
+      timer = 0;
+      if (!pending) return;
+      for (const [k, v] of Object.entries(pending)) model.set(k, v);
+      model.save_changes();
+      pending = null;
+    };
+    const ctl = await mount(el, traitletSource(model), {
+      z: model.get("z"), beta: model.get("beta"), background: model.get("background"),
+      onChange(s) {
+        pending = s;
+        if (!timer) timer = setTimeout(flush, 80);
+      },
+    });
+    const onZ = () => {
+      const z = model.get("z"), s = ctl.state.z;
+      if (z[0] !== s[0] || z[1] !== s[1]) ctl.setZ(z);
+    };
+    const onBeta = () => { if (model.get("beta") !== ctl.state.beta) ctl.setBeta(model.get("beta")); };
+    const onBg = () => ctl.setBackground(model.get("background"));
+    model.on("change:z", onZ);
+    model.on("change:beta", onBeta);
+    model.on("change:background", onBg);
+    window.__latentPad = ctl;  // handy for debugging in the browser console
+    return () => {
+      model.off("change:z", onZ);
+      model.off("change:beta", onBeta);
+      model.off("change:background", onBg);
+      ctl.destroy();
+    };
+  },
+};
