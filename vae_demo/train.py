@@ -4,6 +4,7 @@ Train β-VAEs with a 2-D latent on MNIST.
 Usage:
     python -m vae_demo.train --betas 0.25 1 4 --epochs 30
     python -m vae_demo.train --conditional --beta-min 0.05 --beta-max 16 --epochs 60
+    python -m vae_demo.train --betas 0.05 0.1 0.25 1 4 8 16 --binarize dynamic --out runs_bin
 
 Outputs (under --out, default ./runs):
     beta_<b>/vae.pt, history.json, eval.npz   one plain run per β (see runs.py)
@@ -105,9 +106,10 @@ def _fit(model, train_loader, test_loader, beta_train, beta_eval, epochs, lr, de
 
 
 def train_beta(beta, train_loader, test_loader, epochs=30, lr=1e-3, seed=0,
-               device=None, hidden_dims=(512, 256), log=print):
+               device=None, hidden_dims=(512, 256), binarize="none", log=print):
     """Train one plain β-VAE. Same seed for every β: identical init + data order, so
-    differences come from β (it does NOT guarantee the latent layouts line up)."""
+    differences come from β (it does NOT guarantee the latent layouts line up).
+    `binarize` only labels the run; the loaders must already apply it (get_loaders)."""
     device = device or get_device()
     torch.manual_seed(seed)
     np.random.seed(seed)
@@ -115,12 +117,13 @@ def train_beta(beta, train_loader, test_loader, epochs=30, lr=1e-3, seed=0,
     if log:
         log(f"\n=== β = {beta:g} ===")
     history = _fit(model, train_loader, test_loader, beta, beta, epochs, lr, device, log)
-    return evaluate_run(Run(model=model, kind="plain", beta=beta, history=history), test_loader)
+    return evaluate_run(Run(model=model, kind="plain", beta=beta, history=history,
+                            binarize=binarize), test_loader)
 
 
 def train_conditional(train_loader, test_loader, beta_min=0.05, beta_max=16.0, epochs=60,
                       lr=1e-3, seed=0, device=None, hidden_dims=(512, 256), eval_betas=None,
-                      log=print):
+                      binarize="none", log=print):
     """Train one VAE conditioned on β, with β ~ log-uniform[beta_min, beta_max] per sample."""
     device = device or get_device()
     torch.manual_seed(seed)
@@ -133,7 +136,7 @@ def train_conditional(train_loader, test_loader, beta_min=0.05, beta_max=16.0, e
     if log:
         log(f"\n=== conditional, β ∈ [{beta_min:g}, {beta_max:g}] ===")
     history = _fit(model, train_loader, test_loader, sampler, beta_mid, epochs, lr, device, log)
-    run = Run(model=model, kind="conditional", history=history)
+    run = Run(model=model, kind="conditional", history=history, binarize=binarize)
     return evaluate_run(run, test_loader, eval_betas)
 
 
@@ -156,9 +159,9 @@ def save_run_figures(run: Run, test_loader, run_dir, lim=3.0, grid_n=50):
 
 def train_sweep(betas, out="runs", epochs=30, lr=1e-3, seed=0, device=None,
                 data_dir="./data", batch_size=128, num_workers=2, skip_existing=True,
-                figures=False, log=print):
+                figures=False, binarize="none", log=print):
     """Train (or load, if `out/beta_<b>/vae.pt` exists and skip_existing) one run per β.
-    Returns {β: Run}."""
+    binarize: see data.get_loaders. Returns {β: Run}."""
     device = device or get_device()
     out = Path(out)
     loaders = None
@@ -166,7 +169,8 @@ def train_sweep(betas, out="runs", epochs=30, lr=1e-3, seed=0, device=None,
     def get():
         nonlocal loaders
         if loaders is None:
-            loaders = get_loaders(data_dir, batch_size, num_workers, device.type == "cuda")
+            loaders = get_loaders(data_dir, batch_size, num_workers, device.type == "cuda",
+                                  binarize=binarize, seed=seed)
         return loaders
 
     runs = {}
@@ -175,11 +179,15 @@ def train_sweep(betas, out="runs", epochs=30, lr=1e-3, seed=0, device=None,
         if skip_existing and (run_dir / "vae.pt").exists():
             needs_eval = not (run_dir / "eval.npz").exists()
             runs[beta] = load_run(run_dir, device, get()[1] if needs_eval else None)
+            if runs[beta].binarize != binarize:
+                raise ValueError(f"{run_dir} was trained with binarize={runs[beta].binarize!r}, "
+                                 f"not {binarize!r}; use another --out or --retrain")
             if log:
                 log(f"loaded {run_dir}")
             continue
         train_loader, test_loader = get()
-        run = train_beta(beta, train_loader, test_loader, epochs, lr, seed, device, log=log)
+        run = train_beta(beta, train_loader, test_loader, epochs, lr, seed, device,
+                         binarize=binarize, log=log)
         save_run(run, run_dir)
         if figures:
             save_run_figures(run, test_loader, run_dir)
@@ -209,18 +217,22 @@ def main():
     p.add_argument("--num-workers", type=int, default=2)
     p.add_argument("--retrain", action="store_true", help="retrain even if a checkpoint exists")
     p.add_argument("--figures", action="store_true", help="also write per-run png figures")
+    p.add_argument("--binarize", default="none", choices=["none", "dynamic", "static"],
+                   help="binarize MNIST pixels: dynamic resamples the train set on every read and "
+                        "fixes one seeded draw of the test set; static thresholds both at 0.5")
     args = p.parse_args()
 
     device = get_device(args.device)
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
-    print(f"device: {device}")
+    print(f"device: {device} · binarize: {args.binarize}")
 
     if args.conditional:
         train_loader, test_loader = get_loaders(args.data_dir, args.batch_size,
-                                                args.num_workers, device.type == "cuda")
+                                                args.num_workers, device.type == "cuda",
+                                                binarize=args.binarize, seed=args.seed)
         run = train_conditional(train_loader, test_loader, args.beta_min, args.beta_max,
-                                args.epochs, args.lr, args.seed, device)
+                                args.epochs, args.lr, args.seed, device, binarize=args.binarize)
         save_run(run, out / "cbeta")
         if args.figures:
             save_run_figures(run, test_loader, out / "cbeta")
@@ -230,7 +242,8 @@ def main():
     else:
         runs = train_sweep(args.betas, out, args.epochs, args.lr, args.seed, device,
                            args.data_dir, args.batch_size, args.num_workers,
-                           skip_existing=not args.retrain, figures=args.figures)
+                           skip_existing=not args.retrain, figures=args.figures,
+                           binarize=args.binarize)
         viz.save_compare_plot(runs, out / "compare.png")
         if len(runs) > 1:
             viz.save_beta_summary(list_runs(out, device), out / "beta_summary.png")

@@ -8,6 +8,7 @@ both by the notebook widget (in memory, via traitlets) and by the static site (f
 
 manifest:
     {"version": 1, "lim": 3, "latent_dim": 2, "image": [28, 28],
+     "binarize": "none" | "dynamic" | "static",                 # MNIST preprocessing of every run
      "beta": {"mode": "discrete", "values": [...]}            # plain runs, snap to trained β
            | {"mode": "continuous", "min": .., "max": .., "scale": "log"},  # one conditional run
      "models": [{"name", "beta" | null, "cond" | null,
@@ -71,6 +72,9 @@ def build_bundle(runs, lim=3.0, n_points=3000, dtype="float32", seed=0):
         beta = {"mode": "continuous", "min": c["beta_min"], "max": c["beta_max"], "scale": "log"}
     else:
         raise ValueError("bundle must be plain runs only, or exactly one conditional run")
+    binarize = {r.binarize for r in runs}
+    if len(binarize) > 1:
+        raise ValueError(f"runs mix preprocessing {sorted(binarize)}; losses would not be comparable")
 
     rng = np.random.default_rng(seed)
     buffers, models = {}, []
@@ -98,7 +102,7 @@ def build_bundle(runs, lim=3.0, n_points=3000, dtype="float32", seed=0):
             "history": _history_columns(r.history),
         })
     manifest = {"version": FORMAT_VERSION, "lim": lim, "latent_dim": 2, "image": [28, 28],
-                "beta": beta, "models": models}
+                "binarize": binarize.pop(), "beta": beta, "models": models}
     return manifest, buffers
 
 

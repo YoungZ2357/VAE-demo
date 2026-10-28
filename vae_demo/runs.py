@@ -1,6 +1,6 @@
 """A run = one trained model + its evaluation, saved as a directory:
 
-    vae.pt       {state_dict, kind, beta | cond, latent_dim, hidden_dims}
+    vae.pt       {state_dict, kind, beta | cond, latent_dim, hidden_dims, binarize}
     history.json per-epoch train/test metrics
     eval.npz     test-set posterior means μ(x) and recon/KL at one or more evaluation β's
 
@@ -28,6 +28,7 @@ class Run:
     metrics: dict = field(default_factory=dict)  # eval β -> {"recon", "kl", ...}
     labels: np.ndarray | None = None             # [N] digit labels for `latents`
     path: Path | None = None
+    binarize: str = "none"                       # MNIST preprocessing, see data.get_loaders
 
     @property
     def cond(self):
@@ -54,7 +55,7 @@ def save_run(run: Run, run_dir):
     run_dir.mkdir(parents=True, exist_ok=True)
     m = run.model
     ckpt = {"state_dict": m.state_dict(), "kind": run.kind, "latent_dim": m.latent_dim,
-            "hidden_dims": m.hidden_dims, "input_dim": m.input_dim}
+            "hidden_dims": m.hidden_dims, "input_dim": m.input_dim, "binarize": run.binarize}
     if run.kind == "plain":
         ckpt["beta"] = run.beta
     else:
@@ -90,7 +91,8 @@ def load_run(run_dir, device="cpu", test_loader=None):
     model.to(device).eval()
     hist_path = run_dir / "history.json"
     history = json.loads(hist_path.read_text()) if hist_path.exists() else []
-    run = Run(model=model, kind=kind, beta=ckpt.get("beta"), history=history, path=run_dir)
+    run = Run(model=model, kind=kind, beta=ckpt.get("beta"), history=history, path=run_dir,
+              binarize=ckpt.get("binarize", "none"))
 
     ev = run_dir / "eval.npz"
     if ev.exists():
@@ -104,7 +106,7 @@ def load_run(run_dir, device="cpu", test_loader=None):
         from .train import evaluate_run  # local import: train imports this module
         if test_loader is None:
             from .data import get_loaders
-            _, test_loader = get_loaders(num_workers=0)
+            _, test_loader = get_loaders(num_workers=0, binarize=run.binarize)
         evaluate_run(run, test_loader)
         save_eval(run, run_dir)
     return run

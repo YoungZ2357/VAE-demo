@@ -191,3 +191,6 @@ runs/**/grid_uint8.npy
 
 .idea
 .claude
+runs_bin/**/*.png
+runs_bin/*.png
+runs_bin/**/grid_uint8.npy

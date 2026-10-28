@@ -41,6 +41,17 @@ uv run python -m vae_demo.train --betas 0.25 1 4 --epochs 30 --figures
 uv run python -m vae_demo.train --conditional --beta-min 0.05 --beta-max 16 --epochs 60
 ```
 
+`--binarize dynamic` trains on binarized MNIST: each training image is resampled as
+x ~ Bernoulli(pixel intensity) every time it is read, and the test set is one fixed seeded draw.
+With {0, 1} pixels the decoder's BCE is a true Bernoulli log-likelihood, so recon + KL is a real
+upper bound on −log p(x). The default (`none`) keeps grayscale targets. `--binarize static`
+thresholds at 0.5 instead. Keep each choice in its own `--out`:
+
+```bash
+uv run python -m vae_demo.train --betas 0.05 0.1 0.25 1 4 8 16 --epochs 30 --binarize dynamic --out runs_bin --figures
+uv run python scripts/build_site.py --runs runs_bin
+```
+
 Existing runs are skipped unless you pass `--retrain`. `--conditional` trains a single β-conditional
 VAE (β is an input to both encoder and decoder, sampled log-uniformly per example) into
 `runs/cbeta/`. Its pad gets a continuous β slider.

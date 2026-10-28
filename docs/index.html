@@ -37,6 +37,7 @@
   ul { padding-left: 20px; max-width: 64ch; }
   li { margin: 4px 0; }
   #pad { margin: 8px 0 32px; min-height: 420px; }
+  .note { color: var(--jp-ui-font-color2); font-size: 13px; max-width: 64ch; }
   code { font-size: 0.92em; }
 </style>
 </head>
@@ -70,9 +71,20 @@
       Press ▶ to replay training and watch the trade-off form.</li>
     <li>At the largest β, whole digit classes vanish: the model gives up on information to match the prior.</li>
   </ul>
+  <p class="note" id="data-note"></p>
 </main>
 <script type="module">
   import { mount, urlSource } from "./latent_pad.js";
+  // what "recon" means depends on how the pixels were prepared; say so from the bundle itself
+  fetch("./bundle/manifest.json").then((r) => r.json()).then((m) => {
+    const binarized = m.binarize && m.binarize !== "none";
+    document.getElementById("data-note").textContent = binarized
+      ? "Data: binarized MNIST (" + m.binarize + "; the test set is one fixed draw). Pixels are 0/1, so the " +
+        "decoder's Bernoulli likelihood is a real likelihood and recon + KL is a true upper bound on −log p(x)."
+      : "Data: grayscale MNIST. Pixels lie in [0, 1] rather than {0, 1}, so recon carries a constant floor " +
+        "(the pixels' own entropy) and recon + KL is not strictly a bound on −log p(x). The floor is the same " +
+        "for every β, so comparing β's against each other still holds.";
+  }).catch(() => {});
   const el = document.getElementById("pad");
   mount(el, urlSource("./bundle/"), { beta: 1 }).catch((err) => {
     el.textContent = "Could not load the model: " + err.message;

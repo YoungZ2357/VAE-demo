@@ -482,6 +482,7 @@ export async function mount(el, source, opts = {}) {
   const manifest = await source.getManifest();
   const lim = manifest.lim, betaSpec = manifest.beta;
   const discrete = betaSpec.mode === "discrete";
+  const binarized = manifest.binarize && manifest.binarize !== "none";
   const state = {
     z: opts.z ? [...opts.z] : [0, 0],
     beta: opts.beta ?? 1,
@@ -728,7 +729,7 @@ export async function mount(el, source, opts = {}) {
     if (cur) {
       const mt = metricsAt(cur.m, state.beta);
       metricText.textContent = `test recon ${mt.recon.toFixed(1)} nats · KL ${mt.kl.toFixed(2)} nats` +
-        (mt.exact ? "" : " (interpolated)");
+        (mt.exact ? "" : " (interpolated)") + (binarized ? " · binarized MNIST" : " · grayscale MNIST");
     }
     if (curves) curves.setCurrent(modelFor(state.beta));
     slider.value = toSlider(state.beta);
