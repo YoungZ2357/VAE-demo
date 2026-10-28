@@ -63,6 +63,13 @@
     <li>Raise β. Reconstructions get blurrier (recon ↑) as the codes are squeezed toward the prior
       (KL ↓), but the prior samples at the bottom more often look like real digits. More of the
       prior's mass decodes to something plausible.</li>
+    <li>Under the prior samples, the same ten test digits are reconstructed by every β model. Each
+      row encodes the image with that model's own encoder and decodes its μ(x), so it compares the
+      models themselves, not whatever a fixed point of the plane happens to mean in each one.
+      Read down a column: at β = 16 strokes blur and digits slide toward a generic shape. With only
+      two latent dimensions every model also confuses some classes (4 and 9, 3, 5 and 8), even at
+      small β. One such miss outweighs the blur in a ten-image score, so each row shows its score on
+      these images next to the test-set average. That average is flat up to β = 1 and climbs after it.</li>
     <li>The training curves at the bottom show recon and KL per epoch for every β at once. Hover for
       the values at an epoch, click a legend chip to hide a β, or click a line to load that model.</li>
     <li>Below them, <i>losses vs β</i> lays the same runs side by side. Each model was trained on

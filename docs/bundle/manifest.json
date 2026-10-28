@@ -70,7 +70,8 @@
      "recon": 130.59463195800782,
      "kl": 11.712764358520507,
      "mu": "beta_0.05/mu_0.bin",
-     "n": 3000
+     "n": 3000,
+     "recon_mu": "beta_0.05/recon_mu_0.bin"
     }
    ],
    "labels": "beta_0.05/labels.bin",
@@ -291,7 +292,8 @@
      "recon": 130.20149612426758,
      "kl": 10.90340051651001,
      "mu": "beta_0.1/mu_0.bin",
-     "n": 3000
+     "n": 3000,
+     "recon_mu": "beta_0.1/recon_mu_0.bin"
     }
    ],
    "labels": "beta_0.1/labels.bin",
@@ -512,7 +514,8 @@
      "recon": 130.67559509277345,
      "kl": 8.992842769622802,
      "mu": "beta_0.25/mu_0.bin",
-     "n": 3000
+     "n": 3000,
+     "recon_mu": "beta_0.25/recon_mu_0.bin"
     }
    ],
    "labels": "beta_0.25/labels.bin",
@@ -733,7 +736,8 @@
      "recon": 132.49459381103514,
      "kl": 6.920255374908447,
      "mu": "beta_1/mu_0.bin",
-     "n": 3000
+     "n": 3000,
+     "recon_mu": "beta_1/recon_mu_0.bin"
     }
    ],
    "labels": "beta_1/labels.bin",
@@ -954,7 +958,8 @@
      "recon": 137.44444427490234,
      "kl": 4.881382942199707,
      "mu": "beta_4/mu_0.bin",
-     "n": 3000
+     "n": 3000,
+     "recon_mu": "beta_4/recon_mu_0.bin"
     }
    ],
    "labels": "beta_4/labels.bin",
@@ -1175,7 +1180,8 @@
      "recon": 146.31842803955078,
      "kl": 3.5894409656524657,
      "mu": "beta_8/mu_0.bin",
-     "n": 3000
+     "n": 3000,
+     "recon_mu": "beta_8/recon_mu_0.bin"
     }
    ],
    "labels": "beta_8/labels.bin",
@@ -1396,7 +1402,8 @@
      "recon": 173.1558395385742,
      "kl": 1.5657163619995118,
      "mu": "beta_16/mu_0.bin",
-     "n": 3000
+     "n": 3000,
+     "recon_mu": "beta_16/recon_mu_0.bin"
     }
    ],
    "labels": "beta_16/labels.bin",
@@ -1567,5 +1574,11 @@
     }
    }
   }
- ]
+ ],
+ "recon": {
+  "images": "recon/images.bin",
+  "labels": "recon/labels.bin",
+  "n": 30,
+  "per_class": 3
+ }
 }

@@ -40,6 +40,20 @@ def get_device(name="auto"):
     return torch.device("cpu")
 
 
+def get_test_set(data_dir="./data", binarize="none", seed=0):
+    """Test images exactly as get_loaders feeds them: (x [N, 784] float in [0, 1], labels [N])."""
+    base = datasets.MNIST(data_dir, train=False, download=True)
+    if binarize == "dynamic":
+        x = BinarizedMNIST(base, "fixed", seed).x
+    elif binarize == "static":
+        x = BinarizedMNIST(base, "threshold").x
+    elif binarize == "none":
+        x = base.data.float().div(255)
+    else:
+        raise ValueError(f"binarize must be one of {BINARIZE_MODES}, got {binarize!r}")
+    return x.reshape(len(x), -1), base.targets.clone()
+
+
 def get_loaders(data_dir="./data", batch_size=128, num_workers=2, pin_memory=False,
                 binarize="none", seed=0):
     """binarize: "none" (grayscale in [0, 1]) | "dynamic" (train resampled, test one fixed draw)

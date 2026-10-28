@@ -68,6 +68,22 @@
 }
 .lp-ticks button.lp-on { color: var(--lp-accent); font-weight: 700; }
 
+.lp-recon { margin-top: 20px; }
+.lp-recon-row { display: grid; grid-template-columns: 112px minmax(0, 1fr); align-items: center; gap: 8px; margin-top: 4px; }
+.lp-recon-img {
+  display: block; width: 100%; image-rendering: pixelated; background: #000;
+  border-radius: 4px; border: 1px solid var(--lp-border);
+}
+.lp-recon-label {
+  display: flex; flex-direction: column; align-items: flex-start; font: inherit; font-size: 12px; line-height: 1.3;
+  padding: 0; border: 0; background: none; color: var(--lp-fg); text-align: left; cursor: pointer;
+  font-variant-numeric: tabular-nums;
+}
+span.lp-recon-label { cursor: default; }
+.lp-recon-label span { font-size: 11px; }
+.lp-recon-row.lp-on .lp-recon-label { color: var(--lp-accent); font-weight: 700; }
+.lp-recon-row.lp-on .lp-recon-img { outline: 2px solid var(--lp-accent); outline-offset: 1px; }
+
 .lp-curves { position: relative; margin-top: 20px; }
 .lp-curves-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
 .lp-curve-legend { display: flex; flex-wrap: wrap; gap: 4px; margin: 8px 0 4px; }

@@ -500,11 +500,13 @@ export async function mount(el, source, opts = {}) {
   // Sampled pixels use one fixed uniform draw u per pixel (x = 1 iff u < p), so a sample changes
   // smoothly while z is dragged instead of flickering; "resample" draws new u.
   const nPix = manifest.image[0] * manifest.image[1];
-  let noiseSeed = 1, outU, priorU;
+  let noiseSeed = 1, outU, priorU, reconU;
   function drawNoise() {
     const rnd = mulberry32(noiseSeed++);
     outU = Float32Array.from({ length: nPix }, rnd);
     priorU = Float32Array.from({ length: PRIOR_COLS * PRIOR_ROWS * nPix }, rnd);
+    // one u per recon image, shared by every β row: rows then differ only through p
+    reconU = Float32Array.from({ length: (manifest.recon ? manifest.recon.n : 0) * nPix }, rnd);
   }
   drawNoise();
   const shown = (p, U) => {
@@ -536,7 +538,7 @@ export async function mount(el, source, opts = {}) {
     h("button", { type: "button", "data-pixels": m, onclick: () => setPixels(m, true) },
       { mean: "probability p", sample: "sampled x ~ Bern(p)" }[m]));
   const resampleBtn = h("button", { type: "button", class: "lp-btn", title: "draw new Bernoulli noise",
-    onclick: () => { drawNoise(); if (cur) { drawOut(); renderPrior(); } } }, "resample");
+    onclick: () => { drawNoise(); if (cur) { drawOut(); renderPrior(); } if (recon) recon.draw(); } }, "resample");
   const priorToggle = h("input", { type: "checkbox" });
   priorToggle.addEventListener("change", () => { state.showPrior = priorToggle.checked; drawPad(); });
 
@@ -548,7 +550,7 @@ export async function mount(el, source, opts = {}) {
         h("div", { class: "lp-label lp-gap" }, "background"),
         h("div", { class: "lp-seg" }, ...bgButtons),
         h("label", { class: "lp-check" }, priorToggle, " mark prior samples on the plane"),
-        h("div", { class: "lp-label lp-gap" }, "pixels (decoder(z) and prior samples)"),
+        h("div", { class: "lp-label lp-gap" }, "pixels (all decoded images)"),
         h("div", { class: "lp-row" }, h("div", { class: "lp-seg" }, ...pixelButtons), resampleBtn))),
     h("div", { class: "lp-beta" },
       h("div", { class: "lp-beta-head" }, h("span", { class: "lp-label" }, "β"), betaText, metricText),
@@ -556,6 +558,8 @@ export async function mount(el, source, opts = {}) {
     h("div", { class: "lp-label lp-gap" },
       `prior samples: decoder(z), z ~ N(0, I), same ${PRIOR_COLS * PRIOR_ROWS} z for every β — click one to jump there`),
     prior, status);
+  const recon = manifest.recon ? createRecon() : null;
+  if (recon) root.append(recon.el);
   const curves = createCurves(manifest.models, (m) => { if (m.beta != null) setBeta(m.beta, true); });
   if (curves) root.append(curves.el);
   el.replaceChildren(root);
@@ -604,6 +608,93 @@ export async function mount(el, source, opts = {}) {
     if (i <= 0) return { ...ev[Math.max(i, 0)], exact: i === 0 && ev[0].beta === beta };
     const a = ev[i - 1], b = ev[i], w = (t - Math.log(a.beta)) / (Math.log(b.beta) - Math.log(a.beta));
     return { recon: a.recon + w * (b.recon - a.recon), kl: a.kl + w * (b.kl - a.kl), exact: false };
+  }
+
+  // ---- same test images through every β. Each row decodes that model's own encoder mean μ_β(x),
+  // so the comparison never relies on what a fixed z means in each model's latent space.
+  function createRecon() {
+    const R = manifest.recon, per = R.per_class, cols = R.n / per;
+    const rows = discrete
+      ? manifest.models.map((m) => ({ m, ev: m.evals[0], beta: m.beta }))
+      : manifest.models[0].evals.map((ev) => ({ m: manifest.models[0], ev, beta: ev.beta }));
+    let set = 0, data = null;
+    const strip = () => h("canvas", { class: "lp-recon-img", width: String(cols * 28), height: "28" });
+    const orig = strip();
+    const rowEls = rows.map((r) => {
+      const canvas = strip(), score = h("span", { class: "lp-muted" });
+      const btn = h("button", { type: "button", class: "lp-recon-label", title: "switch to this β",
+                                onclick: () => setBeta(r.beta, true) }, `β = ${fmtBeta(r.beta)}`, score);
+      return { r, canvas, score, el: h("div", { class: "lp-recon-row" }, btn, canvas) };
+    });
+    const other = h("button", { type: "button", class: "lp-btn", onclick: () => { set = (set + 1) % per; draw(); } },
+      "other images");
+    other.disabled = per < 2;
+    const el = h("div", { class: "lp-recon" },
+      h("div", { class: "lp-curves-head" },
+        h("span", { class: "lp-label" }, "same test images, every β: decoder_β(μ_β(x))"), other),
+      h("div", { class: "lp-recon-row" }, h("span", { class: "lp-recon-label lp-muted" }, "input x"), orig),
+      ...rowEls.map((e) => e.el));
+
+    // columns of the current set: digit d -> image d * per + set
+    const pick = (arr, dim) => {
+      const out = new Float32Array(cols * dim);
+      for (let d = 0; d < cols; d++) {
+        const j = d * per + set;
+        out.set(arr.subarray(j * dim, (j + 1) * dim), d * dim);
+      }
+      return out;
+    };
+    const isCur = (r) => (discrete ? r.beta === state.beta : r.ev === nearestEval(r.m, state.beta));
+
+    function draw() {
+      if (!data) return;
+      const x = pick(data.x, nPix), U = pick(reconU, nPix);
+      paintDigits(orig.getContext("2d"), x, cols, cols);
+      rowEls.forEach((e, i) => {
+        const { dec, mu, c } = data.rows[i];
+        const p = dec.forward(pick(mu, 2), cols, c);
+        paintDigits(e.canvas.getContext("2d"), shown(p, U), cols, cols);
+        let bce = 0;  // Bernoulli recon loss of these images, nats per image
+        for (let j = 0; j < p.length; j++) {
+          const q = Math.min(1 - 1e-7, Math.max(1e-7, p[j]));
+          bce -= x[j] * Math.log(q) + (1 - x[j]) * Math.log(1 - q);
+        }
+        // a handful of images is noisy (one digit decoded as the wrong class dominates): show the
+        // test-set mean next to it
+        e.score.textContent = `recon ${(bce / cols).toFixed(1)} here · ${e.r.ev.recon.toFixed(1)} test avg`;
+      });
+      highlight();
+    }
+    function highlight() { for (const e of rowEls) e.el.classList.toggle("lp-on", isCur(e.r)); }
+
+    async function start() {
+      const [x, ...rs] = await Promise.all([
+        source.getBuffer(R.images).then((b) => Float32Array.from(new Uint8Array(b), (v) => v / 255)),
+        ...rows.map(async (r) => ({
+          dec: await decoderFor(r.m),
+          mu: new Float32Array(await source.getBuffer(r.ev.recon_mu)),
+          c: r.m.cond ? betaFeatures(r.beta, r.m.cond) : null,
+        })),
+      ]);
+      data = { x, rows: rs };
+      draw();
+    }
+    // every model's decoder is needed here: load when the section nears the viewport, or after a
+    // short idle delay (observers do not fire while the page is not being rendered)
+    let started = false;
+    const run = () => {
+      if (started) return;
+      started = true;
+      if (io) io.disconnect();
+      clearTimeout(idle);
+      start().catch((err) => { status.textContent = String(err); });
+    };
+    const io = "IntersectionObserver" in window
+      ? new IntersectionObserver((es) => { if (es.some((e) => e.isIntersecting)) run(); }, { rootMargin: "300px" })
+      : null;
+    if (io) io.observe(el);
+    const idle = setTimeout(run, io ? 4000 : 0);
+    return { el, draw, highlight, destroy: () => { if (io) io.disconnect(); clearTimeout(idle); } };
   }
 
   // ---- current β assets
@@ -756,6 +847,7 @@ export async function mount(el, source, opts = {}) {
         (mt.exact ? "" : " (interpolated)") + (binarized ? " · binarized MNIST" : " · grayscale MNIST");
     }
     if (curves) curves.setCurrent(modelFor(state.beta));
+    if (recon) recon.highlight();
     slider.value = toSlider(state.beta);
     for (const t of ticks.children) t.classList.toggle("lp-on", discrete && t.textContent === fmtBeta(state.beta));
     for (const btn of bgButtons) btn.classList.toggle("lp-on", btn.dataset.bg === state.background);
@@ -797,6 +889,7 @@ export async function mount(el, source, opts = {}) {
     if (m === state.pixels || !["mean", "sample"].includes(m)) return;
     state.pixels = m;
     if (cur) { drawOut(); renderPrior(); }
+    if (recon) recon.draw();
     updateText();
     if (fromUser) notify();
   }
@@ -866,7 +959,7 @@ export async function mount(el, source, opts = {}) {
       return dec.forward(new Float32Array(z), 1, m.cond ? betaFeatures(beta, m.cond) : null);
     },
     get state() { return { ...state, z: [...state.z] }; },
-    destroy() { if (curves) curves.destroy(); ro.disconnect(); mq.removeEventListener("change", onScheme); el.replaceChildren(); },
+    destroy() { if (curves) curves.destroy(); if (recon) recon.destroy(); ro.disconnect(); mq.removeEventListener("change", onScheme); el.replaceChildren(); },
   };
 }
 
