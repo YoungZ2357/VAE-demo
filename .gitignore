@@ -188,3 +188,6 @@ reference/
 runs/**/*.png
 runs/*.png
 runs/**/grid_uint8.npy
+
+.idea
+.claude

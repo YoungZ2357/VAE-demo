@@ -61,5 +61,37 @@
 }
 .lp-ticks button.lp-on { color: var(--lp-accent); font-weight: 700; }
 
+.lp-curves { position: relative; margin-top: 20px; }
+.lp-curves-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.lp-curve-legend { display: flex; flex-wrap: wrap; gap: 4px; margin: 8px 0 4px; }
+.lp-curve-legend button {
+  display: inline-flex; align-items: center; gap: 5px; font: inherit; font-size: 12px; padding: 2px 8px;
+  border: 1px solid var(--lp-border); border-radius: 999px; background: transparent; color: var(--lp-fg);
+  cursor: pointer; font-variant-numeric: tabular-nums;
+}
+.lp-curve-legend button.lp-on { font-weight: 700; border-color: var(--lp-fg); }
+.lp-curve-legend button.lp-off { color: var(--lp-muted-fg); text-decoration: line-through; }
+.lp-curve-legend button.lp-off i { opacity: 0.25; }
+.lp-curve-legend i, .lp-tip i { display: inline-block; width: 12px; height: 3px; border-radius: 2px; }
+.lp-charts { display: flex; flex-wrap: wrap; gap: 12px; }
+.lp-fig { flex: 1 1 280px; margin: 0; min-width: 0; }
+.lp-chart { display: block; width: 100%; height: auto; cursor: crosshair; touch-action: pan-y; }
+.lp-chart text { fill: var(--lp-muted-fg); font-size: 11px; font-variant-numeric: tabular-nums; }
+.lp-chart .lp-grid { stroke: var(--lp-grid); stroke-width: 1; }
+.lp-chart .lp-axis { stroke: var(--lp-border); stroke-width: 1; }
+.lp-chart .lp-cross { stroke: var(--lp-muted-fg); stroke-width: 1; stroke-dasharray: 3 3; }
+.lp-chart .lp-dot { stroke: var(--lp-pad-bg); stroke-width: 2; }
+.lp-tip {
+  display: none; position: absolute; z-index: 2; pointer-events: none; padding: 6px 8px;
+  background: var(--lp-pad-bg); border: 1px solid var(--lp-border); border-radius: 6px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15); font-size: 12px; white-space: nowrap;
+}
+.lp-tip table { border-collapse: collapse; margin-top: 2px; }
+.lp-tip th { font-weight: 600; color: var(--lp-muted-fg); text-align: right; padding: 0 0 0 10px; }
+.lp-tip td { padding: 1px 0 1px 10px; text-align: right; font-weight: 600; font-variant-numeric: tabular-nums; }
+.lp-tip td:first-child { padding-left: 0; text-align: left; font-weight: 400; color: var(--lp-muted-fg); }
+.lp-tip td:first-child i { margin-right: 6px; vertical-align: middle; }
+.lp-tip tr.lp-on td:first-child { color: var(--lp-fg); font-weight: 700; }
+
 .lp-status { color: #c92a2a; font-size: 12px; min-height: 0; }
 .lp-status:empty { display: none; }

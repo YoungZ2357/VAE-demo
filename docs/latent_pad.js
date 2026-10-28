@@ -156,6 +156,172 @@ function paintDigits(ctx, pixels, n, cols, size = 28) {
   ctx.putImageData(img, 0, 0);
 }
 
+// ------------------------------------------------------------------ training curves
+// One line per trained model, β order = slot order. Validated categorical slots (light / dark
+// surface); seven ordinal steps of one hue are too close in lightness to tell apart.
+const SERIES_LIGHT = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#6250d6", "#e34948"];
+const SERIES_DARK = ["#3987e5", "#d95926", "#199e70", "#c98500", "#d55181", "#008300", "#9085e9", "#e66767"];
+const CURVE_METRICS = [["recon", "reconstruction loss (nats)"], ["kl", "KL divergence (nats)"]];
+const CW = 360, CH = 220, CM = { l: 40, r: 10, t: 10, b: 34 };
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+function svg(tag, attrs = {}, ...kids) {
+  const e = document.createElementNS(SVG_NS, tag);
+  for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
+  for (const k of kids) e.append(k);
+  return e;
+}
+
+function niceTicks(lo, hi, n = 4) {
+  const raw = (hi - lo) / n || 1, p = 10 ** Math.floor(Math.log10(raw));
+  const step = [1, 2, 2.5, 5, 10].map((k) => k * p).find((s) => s >= raw);
+  const a = Math.floor(lo / step) * step, b = Math.ceil(hi / step) * step, ticks = [];
+  for (let v = a; v <= b + step / 2; v += step) ticks.push(+v.toFixed(10));
+  return { lo: a, hi: b, ticks };
+}
+
+function isDarkSurface(color) {
+  const g = document.createElement("canvas").getContext("2d");
+  g.fillStyle = "#fff"; g.fillStyle = color || "#fff";  // normalises any CSS color to #rrggbb
+  const hex = g.fillStyle;
+  if (!hex.startsWith("#")) return false;
+  const [r, gr, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
+  return 0.2126 * r + 0.7152 * gr + 0.0722 * b < 128;
+}
+
+/** Recon and KL per epoch for every model that carries a history. onPick(model) on click. */
+function createCurves(models, onPick) {
+  const series = models.filter((m) => m.history && m.history.epoch.length)
+    .map((m) => ({ m, label: m.beta == null ? m.name : `β = ${fmtBeta(m.beta)}`, on: true, color: "" }));
+  if (!series.length) return null;
+  const st = { split: "test", current: null, hover: null };
+  const epochs = [...new Set(series.flatMap((s) => s.m.history.epoch))].sort((a, b) => a - b);
+  const x0 = epochs[0], x1 = epochs[epochs.length - 1];
+  const X = (e) => CM.l + ((e - x0) / (x1 - x0 || 1)) * (CW - CM.l - CM.r);
+
+  const tip = h("div", { class: "lp-tip", role: "status" });
+  const legend = h("div", { class: "lp-curve-legend" });
+  const splitBtns = ["train", "test"].map((sp) =>
+    h("button", { type: "button", "data-split": sp, onclick: () => { st.split = sp; draw(); } }, sp));
+  const charts = CURVE_METRICS.map(([key, title]) => ({
+    key, title, y: null,
+    svg: svg("svg", { viewBox: `0 0 ${CW} ${CH}`, class: "lp-chart", role: "img",
+                      "aria-label": `${title} per epoch, one line per β` }),
+  }));
+  const el = h("div", { class: "lp-curves" },
+    h("div", { class: "lp-curves-head" },
+      h("span", { class: "lp-label" }, "training curves — click a line to switch β"),
+      h("div", { class: "lp-seg" }, ...splitBtns)),
+    legend,
+    h("div", { class: "lp-charts" },
+      ...charts.map((c) => h("figure", { class: "lp-fig" }, h("figcaption", { class: "lp-label" }, c.title), c.svg))),
+    tip);
+
+  const valueAt = (s, key, e) => {
+    const i = s.m.history.epoch.indexOf(e);
+    return i < 0 ? null : s.m.history[st.split][key][i];
+  };
+  const isCurrent = (s) => s.m === st.current;
+
+  function drawChart(c) {
+    const vis = series.filter((s) => s.on);
+    const vals = vis.flatMap((s) => s.m.history[st.split][c.key]);
+    const kids = [];
+    if (!vals.length) { c.svg.replaceChildren(); return; }
+    const yt = niceTicks(Math.min(...vals), Math.max(...vals));
+    const Y = (v) => CH - CM.b - ((v - yt.lo) / (yt.hi - yt.lo || 1)) * (CH - CM.t - CM.b);
+    c.y = Y;
+    for (const v of yt.ticks) {
+      kids.push(svg("line", { class: "lp-grid", x1: CM.l, x2: CW - CM.r, y1: Y(v), y2: Y(v) }),
+        svg("text", { x: CM.l - 6, y: Y(v) + 4, "text-anchor": "end" }, String(v)));
+    }
+    for (const e of niceTicks(x0, x1, 5).ticks.filter((e) => e >= x0 && e <= x1)) {
+      kids.push(svg("text", { x: X(e), y: CH - CM.b + 15, "text-anchor": "middle" }, String(e)));
+    }
+    kids.push(svg("line", { class: "lp-axis", x1: CM.l, x2: CW - CM.r, y1: CH - CM.b, y2: CH - CM.b }),
+      svg("text", { x: (CM.l + CW - CM.r) / 2, y: CH - 4, "text-anchor": "middle" }, "epoch"));
+    // current β drawn last so it sits on top
+    const anyCurrent = vis.some(isCurrent);
+    for (const s of [...vis].sort((a, b) => isCurrent(a) - isCurrent(b))) {
+      const ys = s.m.history[st.split][c.key];
+      const d = s.m.history.epoch.map((e, i) => `${i ? "L" : "M"}${X(e).toFixed(1)},${Y(ys[i]).toFixed(1)}`).join("");
+      kids.push(svg("path", { d, fill: "none", stroke: s.color, "stroke-linejoin": "round", "stroke-linecap": "round",
+        "stroke-width": isCurrent(s) ? 3 : 2, opacity: anyCurrent && !isCurrent(s) ? 0.45 : 1 }));
+    }
+    if (st.hover != null) {
+      kids.push(svg("line", { class: "lp-cross", x1: X(st.hover), x2: X(st.hover), y1: CM.t, y2: CH - CM.b }));
+      for (const s of vis) {
+        const v = valueAt(s, c.key, st.hover);
+        if (v != null) kids.push(svg("circle", { class: "lp-dot", cx: X(st.hover), cy: Y(v), r: 4, fill: s.color }));
+      }
+    }
+    c.svg.replaceChildren(...kids);
+  }
+
+  function drawTip(clientX, clientY) {
+    if (st.hover == null) { tip.style.display = "none"; return; }
+    const rows = series.filter((s) => s.on).map((s) => {
+      const [r, k] = ["recon", "kl"].map((key) => valueAt(s, key, st.hover));
+      return h("tr", { class: isCurrent(s) ? "lp-on" : "" },
+        h("td", {}, h("i", { style: `background:${s.color}` }), s.label),
+        h("td", {}, r == null ? "–" : r.toFixed(1)), h("td", {}, k == null ? "–" : k.toFixed(2)));
+    });
+    tip.replaceChildren(h("div", { class: "lp-label" }, `epoch ${st.hover} · ${st.split}`),
+      h("table", {}, h("tr", {}, h("th", {}, ""), h("th", {}, "recon"), h("th", {}, "KL")), ...rows));
+    tip.style.display = "block";
+    const box = el.getBoundingClientRect(), tw = tip.offsetWidth;
+    let left = clientX - box.left + 14;
+    if (left + tw > box.width) left = clientX - box.left - tw - 14;
+    tip.style.left = `${Math.max(0, left)}px`;
+    tip.style.top = `${clientY - box.top + 14}px`;
+  }
+
+  function drawLegend() {
+    legend.replaceChildren(...series.map((s) => h("button", {
+      type: "button", class: (s.on ? "" : "lp-off ") + (isCurrent(s) ? "lp-on" : ""), "aria-pressed": String(s.on),
+      title: "show / hide this β", onclick: () => { s.on = !s.on; draw(); },
+    }, h("i", { style: `background:${s.color}` }), s.label)));
+  }
+
+  function draw() {
+    const pal = isDarkSurface(getComputedStyle(el).getPropertyValue("--lp-pad-bg").trim()) ? SERIES_DARK : SERIES_LIGHT;
+    series.forEach((s, i) => { s.color = pal[i % pal.length]; });
+    for (const b of splitBtns) b.classList.toggle("lp-on", b.dataset.split === st.split);
+    drawLegend();
+    for (const c of charts) drawChart(c);
+  }
+
+  const epochAt = (c, e) => {
+    const r = c.svg.getBoundingClientRect(), px = ((e.clientX - r.left) / r.width) * CW;
+    const t = x0 + ((px - CM.l) / (CW - CM.l - CM.r)) * (x1 - x0);
+    return epochs.reduce((a, b) => (Math.abs(b - t) < Math.abs(a - t) ? b : a));
+  };
+  for (const c of charts) {
+    c.svg.addEventListener("pointermove", (e) => {
+      const ep = epochAt(c, e);
+      if (ep !== st.hover) { st.hover = ep; for (const k of charts) drawChart(k); }
+      drawTip(e.clientX, e.clientY);
+    });
+    c.svg.addEventListener("pointerleave", () => { st.hover = null; for (const k of charts) drawChart(k); drawTip(); });
+    c.svg.addEventListener("click", (e) => {
+      // nearest visible line to the pointer at the hovered epoch
+      if (!onPick || !c.y) return;
+      const r = c.svg.getBoundingClientRect(), py = ((e.clientY - r.top) / r.height) * CH, ep = epochAt(c, e);
+      let best = null, bd = Infinity;
+      for (const s of series.filter((q) => q.on)) {
+        const v = valueAt(s, c.key, ep);
+        if (v != null && Math.abs(c.y(v) - py) < bd) { bd = Math.abs(c.y(v) - py); best = s; }
+      }
+      if (best) onPick(best.m);
+    });
+  }
+
+  return {
+    el, draw,
+    setCurrent(m) { if (st.current !== m) { st.current = m; draw(); } },
+  };
+}
+
 // ------------------------------------------------------------------ the widget
 /**
  * Mount the pad into `el`. `source` provides getManifest() / getBuffer(path).
@@ -215,6 +381,8 @@ export async function mount(el, source, opts = {}) {
     h("div", { class: "lp-label lp-gap" },
       `prior samples: decoder(z), z ~ N(0, I), same ${PRIOR_COLS * PRIOR_ROWS} z for every β — click one to jump there`),
     prior, status);
+  const curves = createCurves(manifest.models, (m) => { if (m.beta != null) setBeta(m.beta, true); });
+  if (curves) root.append(curves.el);
   el.replaceChildren(root);
 
   // ---- β slider
@@ -412,6 +580,7 @@ export async function mount(el, source, opts = {}) {
       metricText.textContent = `test recon ${mt.recon.toFixed(1)} nats · KL ${mt.kl.toFixed(2)} nats` +
         (mt.exact ? "" : " (interpolated)");
     }
+    if (curves) curves.setCurrent(modelFor(state.beta));
     slider.value = toSlider(state.beta);
     for (const t of ticks.children) t.classList.toggle("lp-on", discrete && t.textContent === fmtBeta(state.beta));
     for (const btn of bgButtons) btn.classList.toggle("lp-on", btn.dataset.bg === state.background);
@@ -494,7 +663,7 @@ export async function mount(el, source, opts = {}) {
   const ro = new ResizeObserver(() => { if (cur) drawPad(); });
   ro.observe(pad);
   const mq = window.matchMedia("(prefers-color-scheme: dark)");
-  const onScheme = () => drawPad();
+  const onScheme = () => { drawPad(); if (curves) curves.draw(); };
   mq.addEventListener("change", onScheme);
 
   updateText();

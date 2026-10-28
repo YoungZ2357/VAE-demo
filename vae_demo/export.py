@@ -14,7 +14,8 @@ manifest:
                  "decoder": {"path", "dtype", "input": {"z": 2, "cond": k},
                              "layers": [{"type": "linear", "in", "out", "w", "b"}, {"type": "relu"}, ...,
                                         {"type": "sigmoid"}]},       # w/b: element offsets
-                 "evals": [{"beta", "recon", "kl", "mu", "n"}], "labels": path}]}
+                 "evals": [{"beta", "recon", "kl", "mu", "n"}], "labels": path,
+                 "history": {"epoch": [...], "train" | "test": {"recon": [...], "kl": [...]}} | null}]}
 """
 import json
 from pathlib import Path
@@ -43,6 +44,16 @@ def _decoder_blob(model, dtype):
             raise TypeError(f"decoder layer {type(m).__name__} not supported by the JS runtime")
     layers.append({"type": "sigmoid"})  # VAE.decode = sigmoid(decoder(z))
     return np.concatenate(parts).astype("<" + np.dtype(dtype).str[1:]).tobytes(), layers
+
+
+def _history_columns(history):
+    """history.json rows -> per-split columns for the training-curve chart."""
+    if not history:
+        return None
+    cols = {"epoch": [h["epoch"] for h in history]}
+    for split in ("train", "test"):
+        cols[split] = {k: [round(h[split][k], 4) for h in history] for k in ("recon", "kl")}
+    return cols
 
 
 def build_bundle(runs, lim=3.0, n_points=3000, dtype="float32", seed=0):
@@ -84,6 +95,7 @@ def build_bundle(runs, lim=3.0, n_points=3000, dtype="float32", seed=0):
                         "input": {"z": r.model.latent_dim, "cond": r.model.cond_dim},
                         "layers": layers},
             "evals": evals, "labels": f"{name}/labels.bin",
+            "history": _history_columns(r.history),
         })
     manifest = {"version": FORMAT_VERSION, "lim": lim, "latent_dim": 2, "image": [28, 28],
                 "beta": beta, "models": models}
