@@ -55,6 +55,10 @@
     <li>Drag slowly across the plane at β = 1. Digits morph into each other: the latent space is a
       continuous map, and nearby codes decode to similar images.</li>
     <li>Switch the background to <i>decoded grid</i> to see the whole map at once.</li>
+    <li>Click the digits under the plane to hide or show their codes; double-click one to see it alone.
+      Try just 4 and 9, or 3, 5 and 8: they overlap, and that overlap is where the reconstructions
+      below mix them up. The selection stays as you move β, so you can watch one class's region shrink
+      toward the centre.</li>
     <li>The images show the decoder's output p(x|z): for each pixel, the probability that it is on.
       That is why they are grey at the edges. Switch <i>pixels</i> to <i>sampled</i> to see what the
       model actually generates, x ~ Bernoulli(p), and press <i>resample</i> for another draw.</li>

@@ -14,7 +14,7 @@ class LatentPad(anywidget.AnyWidget):
     `z` and `beta` sync both ways: read them to see where the user is, set them to move the pad.
 
         pad = LatentPad.from_runs(list_runs("runs"))
-        pad.z = [0.0, 2.5]; pad.beta = 4
+        pad.z = [0.0, 2.5]; pad.beta = 4; pad.digits = [4, 9]
     """
     _esm = _STATIC / "latent_pad.js"
     _css = _STATIC / "latent_pad.css"
@@ -25,6 +25,7 @@ class LatentPad(anywidget.AnyWidget):
     beta = traitlets.Float(1.0).tag(sync=True)
     background = traitlets.Unicode("scatter").tag(sync=True)  # "scatter" | "manifold" | "none"
     pixels = traitlets.Unicode("mean").tag(sync=True)  # "mean": p(x|z) | "sample": x ~ Bernoulli(p)
+    digits = traitlets.List(list(range(10))).tag(sync=True)  # classes drawn in the μ(x) scatter
 
     @classmethod
     def from_runs(cls, runs, lim=3.0, n_points=3000, dtype="float32", beta=None, **kw):

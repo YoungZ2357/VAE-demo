@@ -490,6 +490,7 @@ export async function mount(el, source, opts = {}) {
     showPrior: false,
     hoverPrior: -1,
     pixels: opts.pixels || "mean",  // "mean": p(x|z) itself | "sample": x ~ Bernoulli(p)
+    digits: digitMask(opts.digits),  // which classes the μ(x) scatter draws
   };
   if (discrete) state.beta = nearestValue(betaSpec.values, state.beta);
   else state.beta = Math.min(betaSpec.max, Math.max(betaSpec.min, state.beta));
@@ -529,8 +530,15 @@ export async function mount(el, source, opts = {}) {
   const status = h("div", { class: "lp-status" });
   const slider = h("input", { type: "range", class: "lp-slider", "aria-label": "beta" });
   const ticks = h("div", { class: "lp-ticks" });
-  const legend = h("div", { class: "lp-legend" },
-    ...TAB10.map((c, d) => h("span", {}, h("i", { style: `background:${c}` }), String(d))));
+  const digitButtons = TAB10.map((c, d) => h("button", {
+    type: "button", "data-d": String(d), title: `show / hide ${d} · double-click: only ${d}`,
+    onclick: () => setDigits(state.digits.map((on, k) => (k === d ? !on : on)), true),
+    ondblclick: () => setDigits(state.digits.map((_, k) => k === d), true),
+  }, h("i", { style: `background:${c}` }), String(d)));
+  const allDigits = h("button", { type: "button", class: "lp-legend-all",
+    onclick: () => setDigits(state.digits.map(() => true), true) }, "all");
+  const legend = h("div", { class: "lp-legend", role: "group", "aria-label": "digits shown in the scatter" },
+    ...digitButtons, allDigits);
   const bgButtons = ["scatter", "manifold", "none"].map((b) =>
     h("button", { type: "button", "data-bg": b, onclick: () => setBackground(b, true) },
       { scatter: "μ(x) scatter", manifold: "decoded grid", none: "none" }[b]));
@@ -744,6 +752,7 @@ export async function mount(el, source, opts = {}) {
       const { mu, lab } = cur.lat, r = Math.max(1.2, S / 300);
       g.globalAlpha = 0.6;
       for (let i = 0; i < lab.length; i++) {
+        if (!state.digits[lab[i]]) continue;
         const [x, y] = toPx(mu[2 * i], mu[2 * i + 1], S);
         g.fillStyle = TAB10[lab[i]];
         g.beginPath(); g.arc(x, y, r, 0, 2 * Math.PI); g.fill();
@@ -853,6 +862,12 @@ export async function mount(el, source, opts = {}) {
     for (const btn of bgButtons) btn.classList.toggle("lp-on", btn.dataset.bg === state.background);
     for (const btn of pixelButtons) btn.classList.toggle("lp-on", btn.dataset.pixels === state.pixels);
     resampleBtn.disabled = state.pixels !== "sample";
+    for (const btn of digitButtons) {
+      const on = state.digits[+btn.dataset.d];
+      btn.classList.toggle("lp-off", !on);
+      btn.setAttribute("aria-pressed", String(on));
+    }
+    allDigits.disabled = state.digits.every(Boolean);
   }
 
   // ---- frame scheduling: pointer moves only mark dirty, one decode per animation frame
@@ -867,7 +882,8 @@ export async function mount(el, source, opts = {}) {
   }
 
   const notify = () => opts.onChange && opts.onChange({ z: [...state.z], beta: state.beta,
-                                                         background: state.background, pixels: state.pixels });
+                                                         background: state.background, pixels: state.pixels,
+                                                         digits: digitList(state.digits) });
   const clampZ = (v) => Math.max(-lim, Math.min(lim, v));
 
   function setZ(z, fromUser = false) {
@@ -883,6 +899,17 @@ export async function mount(el, source, opts = {}) {
     betaDirty = true;
     updateText();
     schedule();
+    if (fromUser) notify();
+  }
+  function setDigits(mask, fromUser = false) {
+    mask = digitMask(Array.isArray(mask) && typeof mask[0] === "boolean" ? digitList(mask) : mask);
+    if (mask.every((on, d) => on === state.digits[d])) return;
+    state.digits = mask;
+    // the filter only applies to the scatter: show it, or the click would seem to do nothing
+    if (fromUser && state.background !== "scatter") state.background = "scatter";
+    renderBackground();
+    drawPad();
+    updateText();
     if (fromUser) notify();
   }
   function setPixels(m, fromUser = false) {
@@ -952,6 +979,8 @@ export async function mount(el, source, opts = {}) {
     setBeta: (b) => setBeta(b),
     setBackground: (b) => setBackground(b),
     setPixels: (m) => setPixels(m),
+    /** digits: list of classes to draw in the scatter, e.g. [0, 1, 7] */
+    setDigits: (d) => setDigits(d),
     /** For checking against the Python decoder: decodes z at the current β. */
     decodeAt: async (z, beta = state.beta) => {
       const m = modelFor(discrete ? nearestValue(betaSpec.values, beta) : state.beta);
@@ -962,6 +991,14 @@ export async function mount(el, source, opts = {}) {
     destroy() { if (curves) curves.destroy(); if (recon) recon.destroy(); ro.disconnect(); mq.removeEventListener("change", onScheme); el.replaceChildren(); },
   };
 }
+
+// digit selection: [d, ...] (Python / notebook side) <-> boolean mask of 10 (state)
+function digitMask(list) {
+  if (!Array.isArray(list)) return new Array(10).fill(true);
+  const set = new Set(list.map(Number));
+  return Array.from({ length: 10 }, (_, d) => set.has(d));
+}
+const digitList = (mask) => mask.flatMap((on, d) => (on ? [d] : []));
 
 function nearestValue(values, v) {
   return values.reduce((a, b) => (Math.abs(Math.log(b / v)) < Math.abs(Math.log(a / v)) ? b : a));
@@ -981,7 +1018,7 @@ export default {
     };
     const ctl = await mount(el, traitletSource(model), {
       z: model.get("z"), beta: model.get("beta"), background: model.get("background"),
-      pixels: model.get("pixels"),
+      pixels: model.get("pixels"), digits: model.get("digits"),
       onChange(s) {
         pending = s;
         if (!timer) timer = setTimeout(flush, 80);
@@ -994,16 +1031,19 @@ export default {
     const onBeta = () => { if (model.get("beta") !== ctl.state.beta) ctl.setBeta(model.get("beta")); };
     const onBg = () => ctl.setBackground(model.get("background"));
     const onPixels = () => ctl.setPixels(model.get("pixels"));
+    const onDigits = () => ctl.setDigits(model.get("digits"));
     model.on("change:z", onZ);
     model.on("change:beta", onBeta);
     model.on("change:background", onBg);
     model.on("change:pixels", onPixels);
+    model.on("change:digits", onDigits);
     window.__latentPad = ctl;  // handy for debugging in the browser console
     return () => {
       model.off("change:z", onZ);
       model.off("change:beta", onBeta);
       model.off("change:background", onBg);
       model.off("change:pixels", onPixels);
+      model.off("change:digits", onDigits);
       ctl.destroy();
     };
   },
