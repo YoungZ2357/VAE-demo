@@ -163,6 +163,14 @@ const SERIES_LIGHT = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#0
 const SERIES_DARK = ["#3987e5", "#d95926", "#199e70", "#c98500", "#d55181", "#008300", "#9085e9", "#e66767"];
 const CURVE_METRICS = [["recon", "reconstruction loss (nats)"], ["kl", "KL divergence (nats)"]];
 const CW = 360, CH = 220, CM = { l: 40, r: 10, t: 10, b: 34 };
+// Losses against β at one epoch. "share" = how much of the objective recon + β·KL the KL term carries,
+// i.e. how hard the updates are pulled toward the prior rather than toward reconstruction.
+const BETA_METRICS = [
+  ["recon", "reconstruction loss (nats)", (r) => r],
+  ["kl", "KL divergence (nats)", (r, k) => k],
+  ["share", "β·KL share of objective (%)", (r, k, b) => (100 * b * k) / (r + b * k)],
+];
+const BW = 240, BH = 200, BM = { l: 36, r: 10, t: 10, b: 34 };
 const SVG_NS = "http://www.w3.org/2000/svg";
 
 function svg(tag, attrs = {}, ...kids) {
@@ -194,10 +202,42 @@ function createCurves(models, onPick) {
   const series = models.filter((m) => m.history && m.history.epoch.length)
     .map((m) => ({ m, label: m.beta == null ? m.name : `β = ${fmtBeta(m.beta)}`, on: true, color: "" }));
   if (!series.length) return null;
-  const st = { split: "test", current: null, hover: null };
   const epochs = [...new Set(series.flatMap((s) => s.m.history.epoch))].sort((a, b) => a - b);
   const x0 = epochs[0], x1 = epochs[epochs.length - 1];
   const X = (e) => CM.l + ((e - x0) / (x1 - x0 || 1)) * (CW - CM.l - CM.r);
+  // hover: epoch under the pointer in the training curves; bEpoch: epoch slider of the β charts
+  const st = { split: "test", current: null, hover: null, bEpoch: x1, bHover: null };
+
+  // ---- losses vs β (plain runs only: needs a β per model)
+  const betaSeries = series.filter((s) => s.m.beta != null);
+  const lb = betaSeries.map((s) => Math.log(s.m.beta));
+  const lb0 = Math.min(...lb), lb1 = Math.max(...lb), lpad = 0.06 * (lb1 - lb0 || 1);
+  const BX = (b) => BM.l + ((Math.log(b) - lb0 + lpad) / (lb1 - lb0 + 2 * lpad)) * (BW - BM.l - BM.r);
+  const bcharts = betaSeries.length < 2 ? [] : BETA_METRICS.map(([key, title, f]) => ({
+    key, title, f, y: null,
+    svg: svg("svg", { viewBox: `0 0 ${BW} ${BH}`, class: "lp-chart", role: "img", "aria-label": `${title} against β` }),
+  }));
+  const bEpochNow = () => st.hover ?? st.bEpoch;
+  const bCaption = h("span", { class: "lp-muted lp-bcap" });
+  const bSlider = h("input", { type: "range", class: "lp-slider", min: "0", max: String(epochs.length - 1),
+                               step: "1", value: String(epochs.length - 1), "aria-label": "epoch" });
+  bSlider.addEventListener("input", () => { stopPlay(); st.bEpoch = epochs[+bSlider.value]; drawBeta(); });
+  const playBtn = h("button", { type: "button", class: "lp-play", "aria-label": "play training",
+                                onclick: () => (playTimer ? stopPlay() : startPlay()) }, "▶");
+  let playTimer = 0;
+  function startPlay() {
+    if (st.bEpoch >= x1) st.bEpoch = x0;
+    playBtn.textContent = "❚❚";
+    playTimer = setInterval(() => {
+      st.bEpoch = epochs[Math.min(epochs.length - 1, epochs.indexOf(st.bEpoch) + 1)];
+      drawBeta();
+      if (st.bEpoch >= x1) stopPlay();
+    }, 160);
+    drawBeta();
+  }
+  function stopPlay() {
+    clearInterval(playTimer); playTimer = 0; playBtn.textContent = "▶";
+  }
 
   const tip = h("div", { class: "lp-tip", role: "status" });
   const legend = h("div", { class: "lp-curve-legend" });
@@ -215,6 +255,13 @@ function createCurves(models, onPick) {
     legend,
     h("div", { class: "lp-charts" },
       ...charts.map((c) => h("figure", { class: "lp-fig" }, h("figcaption", { class: "lp-label" }, c.title), c.svg))),
+    ...(bcharts.length ? [
+      h("div", { class: "lp-curves-head lp-bhead" },
+        h("span", { class: "lp-label" }, "losses vs β — click a point to switch β"), bCaption),
+      h("div", { class: "lp-bctl" }, playBtn, bSlider),
+      h("div", { class: "lp-charts" }, ...bcharts.map((c) =>
+        h("figure", { class: "lp-fig lp-fig-sm" }, h("figcaption", { class: "lp-label" }, c.title), c.svg))),
+    ] : []),
     tip);
 
   const valueAt = (s, key, e) => {
@@ -258,16 +305,88 @@ function createCurves(models, onPick) {
     c.svg.replaceChildren(...kids);
   }
 
-  function drawTip(clientX, clientY) {
-    if (st.hover == null) { tip.style.display = "none"; return; }
+  // value of f(recon, kl, β) for one model at epoch e
+  const atEpoch = (s, f, e) => {
+    const H = s.m.history, i = H.epoch.indexOf(e);
+    return i < 0 ? null : f(H[st.split].recon[i], H[st.split].kl[i], s.m.beta);
+  };
+
+  function drawBetaChart(c) {
+    const ep = bEpochNow();
+    const pts = betaSeries.filter((s) => s.on)
+      .map((s) => ({ s, v: atEpoch(s, c.f, ep), fin: atEpoch(s, c.f, x1) }))
+      .filter((p) => p.v != null && p.fin != null);
+    if (!pts.length) { c.svg.replaceChildren(); return; }
+    const vals = pts.flatMap((p) => [p.v, p.fin]);
+    const yt = niceTicks(c.key === "share" ? 0 : Math.min(...vals), Math.max(...vals));
+    const Y = (v) => BH - BM.b - ((v - yt.lo) / (yt.hi - yt.lo || 1)) * (BH - BM.t - BM.b);
+    c.y = Y;
+    const kids = [];
+    for (const v of yt.ticks) {
+      kids.push(svg("line", { class: "lp-grid", x1: BM.l, x2: BW - BM.r, y1: Y(v), y2: Y(v) }),
+        svg("text", { x: BM.l - 6, y: Y(v) + 4, "text-anchor": "end" }, String(v)));
+    }
+    // decade labels; a small tick under every trained β
+    for (const b of [0.001, 0.01, 0.1, 1, 10, 100, 1000]) {
+      const x = BX(b);
+      if (x >= BM.l && x <= BW - BM.r) kids.push(svg("text", { x, y: BH - BM.b + 15, "text-anchor": "middle" }, String(b)));
+    }
+    for (const s of betaSeries) {
+      kids.push(svg("line", { class: "lp-axis", x1: BX(s.m.beta), x2: BX(s.m.beta), y1: BH - BM.b, y2: BH - BM.b + 4 }));
+    }
+    kids.push(svg("line", { class: "lp-axis", x1: BM.l, x2: BW - BM.r, y1: BH - BM.b, y2: BH - BM.b }),
+      svg("text", { x: (BM.l + BW - BM.r) / 2, y: BH - 4, "text-anchor": "middle" }, "β (log scale)"));
+    if (st.current && st.current.beta != null) {
+      const x = BX(st.current.beta);
+      kids.push(svg("line", { class: "lp-curmark", x1: x, x2: x, y1: BM.t, y2: BH - BM.b }));
+    }
+    if (st.bHover) {
+      const x = BX(st.bHover.m.beta);
+      kids.push(svg("line", { class: "lp-cross", x1: x, x2: x, y1: BM.t, y2: BH - BM.b }));
+    }
+    const path = (key, cls) => svg("path", { class: cls, fill: "none",
+      d: pts.map((p, i) => `${i ? "L" : "M"}${BX(p.s.m.beta).toFixed(1)},${Y(p[key]).toFixed(1)}`).join("") });
+    if (ep !== x1) kids.push(path("fin", "lp-ghost"));
+    kids.push(path("v", "lp-bline"));
+    for (const p of pts) {
+      kids.push(svg("circle", { class: "lp-dot", cx: BX(p.s.m.beta), cy: Y(p.v), fill: p.s.color,
+                                r: isCurrent(p.s) || p.s === st.bHover ? 6 : 4.5 }));
+    }
+    c.svg.replaceChildren(...kids);
+  }
+
+  function drawBeta() {
+    if (!bcharts.length) return;
+    const ep = bEpochNow();
+    bCaption.textContent = `epoch ${ep} of ${x1} · ${st.split}` + (ep === x1 ? " (final)" : " · dashed = final");
+    bSlider.value = String(epochs.indexOf(st.bEpoch));
+    for (const c of bcharts) drawBetaChart(c);
+  }
+
+  function epochTip() {
     const rows = series.filter((s) => s.on).map((s) => {
       const [r, k] = ["recon", "kl"].map((key) => valueAt(s, key, st.hover));
       return h("tr", { class: isCurrent(s) ? "lp-on" : "" },
         h("td", {}, h("i", { style: `background:${s.color}` }), s.label),
         h("td", {}, r == null ? "–" : r.toFixed(1)), h("td", {}, k == null ? "–" : k.toFixed(2)));
     });
-    tip.replaceChildren(h("div", { class: "lp-label" }, `epoch ${st.hover} · ${st.split}`),
-      h("table", {}, h("tr", {}, h("th", {}, ""), h("th", {}, "recon"), h("th", {}, "KL")), ...rows));
+    return [h("div", { class: "lp-label" }, `epoch ${st.hover} · ${st.split}`),
+      h("table", {}, h("tr", {}, h("th", {}, ""), h("th", {}, "recon"), h("th", {}, "KL")), ...rows)];
+  }
+
+  function betaTip(s) {
+    const ep = bEpochNow(), [r, k] = ["recon", "kl"].map((key) => valueAt(s, key, ep)), b = s.m.beta;
+    if (r == null || k == null) return [h("div", { class: "lp-label" }, s.label)];
+    const row = (name, v) => h("tr", {}, h("td", {}, name), h("td", {}, v));
+    return [h("div", { class: "lp-label" }, h("i", { style: `background:${s.color}` }), ` ${s.label} · epoch ${ep} · ${st.split}`),
+      h("table", {}, row("recon", r.toFixed(1)), row("KL", k.toFixed(2)), row("β·KL", (b * k).toFixed(2)),
+        row("objective recon + β·KL", (r + b * k).toFixed(1)),
+        row("β·KL share", `${((100 * b * k) / (r + b * k)).toFixed(1)}%`))];
+  }
+
+  function hideTip() { tip.style.display = "none"; }
+  function showTip(content, clientX, clientY) {
+    tip.replaceChildren(...content);
     tip.style.display = "block";
     const box = el.getBoundingClientRect(), tw = tip.offsetWidth;
     let left = clientX - box.left + 14;
@@ -289,6 +408,7 @@ function createCurves(models, onPick) {
     for (const b of splitBtns) b.classList.toggle("lp-on", b.dataset.split === st.split);
     drawLegend();
     for (const c of charts) drawChart(c);
+    drawBeta();
   }
 
   const epochAt = (c, e) => {
@@ -299,10 +419,12 @@ function createCurves(models, onPick) {
   for (const c of charts) {
     c.svg.addEventListener("pointermove", (e) => {
       const ep = epochAt(c, e);
-      if (ep !== st.hover) { st.hover = ep; for (const k of charts) drawChart(k); }
-      drawTip(e.clientX, e.clientY);
+      if (ep !== st.hover) { st.hover = ep; for (const k of charts) drawChart(k); drawBeta(); }
+      showTip(epochTip(), e.clientX, e.clientY);
     });
-    c.svg.addEventListener("pointerleave", () => { st.hover = null; for (const k of charts) drawChart(k); drawTip(); });
+    c.svg.addEventListener("pointerleave", () => {
+      st.hover = null; for (const k of charts) drawChart(k); drawBeta(); hideTip();
+    });
     c.svg.addEventListener("click", (e) => {
       // nearest visible line to the pointer at the hovered epoch
       if (!onPick || !c.y) return;
@@ -316,9 +438,28 @@ function createCurves(models, onPick) {
     });
   }
 
+  const betaAt = (c, e) => {
+    const r = c.svg.getBoundingClientRect(), px = ((e.clientX - r.left) / r.width) * BW;
+    return betaSeries.filter((s) => s.on)
+      .reduce((a, s) => (!a || Math.abs(BX(s.m.beta) - px) < Math.abs(BX(a.m.beta) - px) ? s : a), null);
+  };
+  for (const c of bcharts) {
+    c.svg.addEventListener("pointermove", (e) => {
+      const s = betaAt(c, e);
+      if (s !== st.bHover) { st.bHover = s; drawBeta(); }
+      if (s) showTip(betaTip(s), e.clientX, e.clientY); else hideTip();
+    });
+    c.svg.addEventListener("pointerleave", () => { st.bHover = null; drawBeta(); hideTip(); });
+    c.svg.addEventListener("click", (e) => {
+      const s = betaAt(c, e);
+      if (s && onPick) onPick(s.m);
+    });
+  }
+
   return {
     el, draw,
     setCurrent(m) { if (st.current !== m) { st.current = m; draw(); } },
+    destroy: stopPlay,
   };
 }
 
@@ -680,7 +821,7 @@ export async function mount(el, source, opts = {}) {
       return dec.forward(new Float32Array(z), 1, m.cond ? betaFeatures(beta, m.cond) : null);
     },
     get state() { return { ...state, z: [...state.z] }; },
-    destroy() { ro.disconnect(); mq.removeEventListener("change", onScheme); el.replaceChildren(); },
+    destroy() { if (curves) curves.destroy(); ro.disconnect(); mq.removeEventListener("change", onScheme); el.replaceChildren(); },
   };
 }
 

@@ -81,6 +81,19 @@
 .lp-chart .lp-axis { stroke: var(--lp-border); stroke-width: 1; }
 .lp-chart .lp-cross { stroke: var(--lp-muted-fg); stroke-width: 1; stroke-dasharray: 3 3; }
 .lp-chart .lp-dot { stroke: var(--lp-pad-bg); stroke-width: 2; }
+.lp-fig-sm { flex: 1 1 200px; max-width: 380px; }
+.lp-bhead { margin-top: 20px; }
+.lp-bcap { font-size: 12px; font-variant-numeric: tabular-nums; }
+.lp-bctl { display: flex; align-items: center; gap: 10px; margin: 4px 0 6px; }
+.lp-bctl .lp-slider { margin: 0; }
+.lp-play {
+  flex: none; width: 30px; height: 26px; font: inherit; font-size: 12px; line-height: 1; padding: 0;
+  border: 1px solid var(--lp-border); border-radius: 6px; background: transparent; color: var(--lp-fg); cursor: pointer;
+}
+.lp-play:hover { background: var(--lp-surface); }
+.lp-chart .lp-bline { stroke: var(--lp-muted-fg); stroke-width: 2; stroke-linejoin: round; }
+.lp-chart .lp-ghost { stroke: var(--lp-muted-fg); stroke-width: 1.5; stroke-dasharray: 4 3; opacity: 0.6; }
+.lp-chart .lp-curmark { stroke: var(--lp-accent); stroke-width: 2; opacity: 0.5; }
 .lp-tip {
   display: none; position: absolute; z-index: 2; pointer-events: none; padding: 6px 8px;
   background: var(--lp-pad-bg); border: 1px solid var(--lp-border); border-radius: 6px;
