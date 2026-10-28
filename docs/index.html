@@ -61,10 +61,13 @@
       prior's mass decodes to something plausible.</li>
     <li>The training curves at the bottom show recon and KL per epoch for every β at once. Hover for
       the values at an epoch, click a legend chip to hide a β, or click a line to load that model.</li>
-    <li>Below them, <i>losses vs β</i> lays the same runs side by side: recon climbs and KL falls as β
-      grows, while the KL term's share of the objective recon + β·KL (what the updates actually push on)
-      rises from under 1% at β = 0.05 to about 17% at β = 8, then drops at β = 16, where the encoder has
-      squeezed KL almost to zero. Press ▶ to replay training and watch the trade-off form.</li>
+    <li>Below them, <i>losses vs β</i> lays the same runs side by side. Each model was trained on
+      recon + β·KL, but the third chart scores all of them on plain recon + KL, the negative ELBO,
+      which bounds −log p(x). On the test set it is lowest at β = 1, the original VAE objective:
+      that is the one β that optimises the bound itself. Any other β gives up some of the bound for
+      something else. Small β buys sharper reconstructions (recon ↓, KL ↑); large β buys better
+      coverage of the prior (KL ↓, so samples from N(0, I) land where the decoder has seen codes).
+      Press ▶ to replay training and watch the trade-off form.</li>
     <li>At the largest β, whole digit classes vanish: the model gives up on information to match the prior.</li>
   </ul>
 </main>

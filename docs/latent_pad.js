@@ -163,12 +163,12 @@ const SERIES_LIGHT = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#0
 const SERIES_DARK = ["#3987e5", "#d95926", "#199e70", "#c98500", "#d55181", "#008300", "#9085e9", "#e66767"];
 const CURVE_METRICS = [["recon", "reconstruction loss (nats)"], ["kl", "KL divergence (nats)"]];
 const CW = 360, CH = 220, CM = { l: 40, r: 10, t: 10, b: 34 };
-// Losses against β at one epoch. "share" = how much of the objective recon + β·KL the KL term carries,
-// i.e. how hard the updates are pulled toward the prior rather than toward reconstruction.
+// Losses against β at one epoch. "nelbo" = recon + KL, the negative ELBO with the β weight removed:
+// the same yardstick for every model, so its lowest point is the best bound on -log p(x).
 const BETA_METRICS = [
   ["recon", "reconstruction loss (nats)", (r) => r],
   ["kl", "KL divergence (nats)", (r, k) => k],
-  ["share", "β·KL share of objective (%)", (r, k, b) => (100 * b * k) / (r + b * k)],
+  ["nelbo", "recon + KL = −ELBO (nats)", (r, k) => r + k],
 ];
 const BW = 240, BH = 200, BM = { l: 36, r: 10, t: 10, b: 34 };
 const SVG_NS = "http://www.w3.org/2000/svg";
@@ -318,7 +318,7 @@ function createCurves(models, onPick) {
       .filter((p) => p.v != null && p.fin != null);
     if (!pts.length) { c.svg.replaceChildren(); return; }
     const vals = pts.flatMap((p) => [p.v, p.fin]);
-    const yt = niceTicks(c.key === "share" ? 0 : Math.min(...vals), Math.max(...vals));
+    const yt = niceTicks(Math.min(...vals), Math.max(...vals));
     const Y = (v) => BH - BM.b - ((v - yt.lo) / (yt.hi - yt.lo || 1)) * (BH - BM.t - BM.b);
     c.y = Y;
     const kids = [];
@@ -352,6 +352,15 @@ function createCurves(models, onPick) {
       kids.push(svg("circle", { class: "lp-dot", cx: BX(p.s.m.beta), cy: Y(p.v), fill: p.s.color,
                                 r: isCurrent(p.s) || p.s === st.bHover ? 6 : 4.5 }));
     }
+    if (c.key === "nelbo") {
+      // the tightest bound among the visible models
+      const best = pts.reduce((a, p) => (p.v < a.v ? p : a));
+      const x = BX(best.s.m.beta), y = Y(best.v);
+      kids.push(svg("circle", { class: "lp-best", cx: x, cy: y, r: 9 }),
+        svg("text", { class: "lp-best-label", x, y: y - 14,
+                      "text-anchor": x < BW * 0.35 ? "start" : x > BW * 0.65 ? "end" : "middle" },
+          `lowest: ${best.s.label} (${best.v.toFixed(1)})`));
+    }
     c.svg.replaceChildren(...kids);
   }
 
@@ -379,9 +388,9 @@ function createCurves(models, onPick) {
     if (r == null || k == null) return [h("div", { class: "lp-label" }, s.label)];
     const row = (name, v) => h("tr", {}, h("td", {}, name), h("td", {}, v));
     return [h("div", { class: "lp-label" }, h("i", { style: `background:${s.color}` }), ` ${s.label} · epoch ${ep} · ${st.split}`),
-      h("table", {}, row("recon", r.toFixed(1)), row("KL", k.toFixed(2)), row("β·KL", (b * k).toFixed(2)),
-        row("objective recon + β·KL", (r + b * k).toFixed(1)),
-        row("β·KL share", `${((100 * b * k) / (r + b * k)).toFixed(1)}%`))];
+      h("table", {}, row("recon", r.toFixed(1)), row("KL", k.toFixed(2)),
+        row("recon + KL (−ELBO)", (r + k).toFixed(1)),
+        row("trained on recon + β·KL", (r + b * k).toFixed(1)))];
   }
 
   function hideTip() { tip.style.display = "none"; }

@@ -93,6 +93,10 @@
 .lp-play:hover { background: var(--lp-surface); }
 .lp-chart .lp-bline { stroke: var(--lp-muted-fg); stroke-width: 2; stroke-linejoin: round; }
 .lp-chart .lp-ghost { stroke: var(--lp-muted-fg); stroke-width: 1.5; stroke-dasharray: 4 3; opacity: 0.6; }
+.lp-chart .lp-best { fill: none; stroke: var(--lp-fg); stroke-width: 1.5; }
+.lp-chart text.lp-best-label {
+  fill: var(--lp-fg); font-weight: 600; stroke: var(--lp-pad-bg); stroke-width: 4px; paint-order: stroke;
+}
 .lp-chart .lp-curmark { stroke: var(--lp-accent); stroke-width: 2; opacity: 0.5; }
 .lp-tip {
   display: none; position: absolute; z-index: 2; pointer-events: none; padding: 6px 8px;
