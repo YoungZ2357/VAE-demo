@@ -55,6 +55,9 @@
     <li>Drag slowly across the plane at β = 1. Digits morph into each other: the latent space is a
       continuous map, and nearby codes decode to similar images.</li>
     <li>Switch the background to <i>decoded grid</i> to see the whole map at once.</li>
+    <li>The images show the decoder's output p(x|z): for each pixel, the probability that it is on.
+      That is why they are grey at the edges. Switch <i>pixels</i> to <i>sampled</i> to see what the
+      model actually generates, x ~ Bernoulli(p), and press <i>resample</i> for another draw.</li>
     <li>At small β, digits are sharp, but the codes (scatter) spread out in clusters with gaps.
       Drag into a gap inside the 86% circle: the image there is often a blur no digit owns.</li>
     <li>Raise β. Reconstructions get blurrier (recon ↑) as the codes are squeezed toward the prior

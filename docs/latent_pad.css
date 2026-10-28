@@ -48,6 +48,13 @@
 }
 .lp-seg button + button { border-left: 1px solid var(--lp-border); }
 .lp-seg button.lp-on { background: var(--lp-surface); font-weight: 600; }
+.lp-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.lp-btn {
+  font: inherit; font-size: 12px; padding: 4px 10px; border: 1px solid var(--lp-border); border-radius: 6px;
+  background: transparent; color: var(--lp-fg); cursor: pointer;
+}
+.lp-btn:hover:not(:disabled) { background: var(--lp-surface); }
+.lp-btn:disabled { color: var(--lp-muted-fg); opacity: 0.5; cursor: default; }
 .lp-check { display: flex; align-items: center; gap: 6px; margin-top: 6px; color: var(--lp-muted-fg); cursor: pointer; }
 
 .lp-beta { margin-top: 16px; }

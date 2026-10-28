@@ -24,6 +24,7 @@ class LatentPad(anywidget.AnyWidget):
     z = traitlets.List([0.0, 0.0]).tag(sync=True)
     beta = traitlets.Float(1.0).tag(sync=True)
     background = traitlets.Unicode("scatter").tag(sync=True)  # "scatter" | "manifold" | "none"
+    pixels = traitlets.Unicode("mean").tag(sync=True)  # "mean": p(x|z) | "sample": x ~ Bernoulli(p)
 
     @classmethod
     def from_runs(cls, runs, lim=3.0, n_points=3000, dtype="float32", beta=None, **kw):

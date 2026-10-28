@@ -489,6 +489,7 @@ export async function mount(el, source, opts = {}) {
     background: opts.background || "scatter",
     showPrior: false,
     hoverPrior: -1,
+    pixels: opts.pixels || "mean",  // "mean": p(x|z) itself | "sample": x ~ Bernoulli(p)
   };
   if (discrete) state.beta = nearestValue(betaSpec.values, state.beta);
   else state.beta = Math.min(betaSpec.max, Math.max(betaSpec.min, state.beta));
@@ -496,6 +497,22 @@ export async function mount(el, source, opts = {}) {
   const cache = new Map();
   const load = (key, fn) => { if (!cache.has(key)) cache.set(key, fn()); return cache.get(key); };
   const priorZ = gaussianSamples(PRIOR_COLS * PRIOR_ROWS, PRIOR_SEED);
+  // Sampled pixels use one fixed uniform draw u per pixel (x = 1 iff u < p), so a sample changes
+  // smoothly while z is dragged instead of flickering; "resample" draws new u.
+  const nPix = manifest.image[0] * manifest.image[1];
+  let noiseSeed = 1, outU, priorU;
+  function drawNoise() {
+    const rnd = mulberry32(noiseSeed++);
+    outU = Float32Array.from({ length: nPix }, rnd);
+    priorU = Float32Array.from({ length: PRIOR_COLS * PRIOR_ROWS * nPix }, rnd);
+  }
+  drawNoise();
+  const shown = (p, U) => {
+    if (state.pixels !== "sample") return p;
+    const x = new Float32Array(p.length);
+    for (let i = 0; i < p.length; i++) x[i] = U[i] < p[i] ? 1 : 0;
+    return x;
+  };
 
   // ---- layout
   const pad = h("canvas", { class: "lp-pad", tabindex: "0",
@@ -515,6 +532,11 @@ export async function mount(el, source, opts = {}) {
   const bgButtons = ["scatter", "manifold", "none"].map((b) =>
     h("button", { type: "button", "data-bg": b, onclick: () => setBackground(b, true) },
       { scatter: "μ(x) scatter", manifold: "decoded grid", none: "none" }[b]));
+  const pixelButtons = ["mean", "sample"].map((m) =>
+    h("button", { type: "button", "data-pixels": m, onclick: () => setPixels(m, true) },
+      { mean: "probability p", sample: "sampled x ~ Bern(p)" }[m]));
+  const resampleBtn = h("button", { type: "button", class: "lp-btn", title: "draw new Bernoulli noise",
+    onclick: () => { drawNoise(); if (cur) { drawOut(); renderPrior(); } } }, "resample");
   const priorToggle = h("input", { type: "checkbox" });
   priorToggle.addEventListener("change", () => { state.showPrior = priorToggle.checked; drawPad(); });
 
@@ -525,7 +547,9 @@ export async function mount(el, source, opts = {}) {
         h("div", { class: "lp-label" }, "decoder(z)"), out, zText, massText,
         h("div", { class: "lp-label lp-gap" }, "background"),
         h("div", { class: "lp-seg" }, ...bgButtons),
-        h("label", { class: "lp-check" }, priorToggle, " mark prior samples on the plane"))),
+        h("label", { class: "lp-check" }, priorToggle, " mark prior samples on the plane"),
+        h("div", { class: "lp-label lp-gap" }, "pixels (decoder(z) and prior samples)"),
+        h("div", { class: "lp-row" }, h("div", { class: "lp-seg" }, ...pixelButtons), resampleBtn))),
     h("div", { class: "lp-beta" },
       h("div", { class: "lp-beta-head" }, h("span", { class: "lp-label" }, "β"), betaText, metricText),
       slider, ticks),
@@ -713,12 +737,12 @@ export async function mount(el, source, opts = {}) {
 
   function drawOut() {
     if (!cur) return;
-    paintDigits(out.getContext("2d"), cur.dec.forward(new Float32Array(state.z), 1, cur.c), 1, 1);
+    paintDigits(out.getContext("2d"), shown(cur.dec.forward(new Float32Array(state.z), 1, cur.c), outU), 1, 1);
   }
 
   function renderPrior() {
     const n = PRIOR_COLS * PRIOR_ROWS;
-    paintDigits(prior.getContext("2d"), cur.dec.forward(priorZ, n, cur.c), n, PRIOR_COLS);
+    paintDigits(prior.getContext("2d"), shown(cur.dec.forward(priorZ, n, cur.c), priorU), n, PRIOR_COLS);
   }
 
   function updateText() {
@@ -735,6 +759,8 @@ export async function mount(el, source, opts = {}) {
     slider.value = toSlider(state.beta);
     for (const t of ticks.children) t.classList.toggle("lp-on", discrete && t.textContent === fmtBeta(state.beta));
     for (const btn of bgButtons) btn.classList.toggle("lp-on", btn.dataset.bg === state.background);
+    for (const btn of pixelButtons) btn.classList.toggle("lp-on", btn.dataset.pixels === state.pixels);
+    resampleBtn.disabled = state.pixels !== "sample";
   }
 
   // ---- frame scheduling: pointer moves only mark dirty, one decode per animation frame
@@ -748,7 +774,8 @@ export async function mount(el, source, opts = {}) {
     });
   }
 
-  const notify = () => opts.onChange && opts.onChange({ z: [...state.z], beta: state.beta, background: state.background });
+  const notify = () => opts.onChange && opts.onChange({ z: [...state.z], beta: state.beta,
+                                                         background: state.background, pixels: state.pixels });
   const clampZ = (v) => Math.max(-lim, Math.min(lim, v));
 
   function setZ(z, fromUser = false) {
@@ -764,6 +791,13 @@ export async function mount(el, source, opts = {}) {
     betaDirty = true;
     updateText();
     schedule();
+    if (fromUser) notify();
+  }
+  function setPixels(m, fromUser = false) {
+    if (m === state.pixels || !["mean", "sample"].includes(m)) return;
+    state.pixels = m;
+    if (cur) { drawOut(); renderPrior(); }
+    updateText();
     if (fromUser) notify();
   }
   function setBackground(b, fromUser = false) {
@@ -824,6 +858,7 @@ export async function mount(el, source, opts = {}) {
     setZ: (z) => setZ(z),
     setBeta: (b) => setBeta(b),
     setBackground: (b) => setBackground(b),
+    setPixels: (m) => setPixels(m),
     /** For checking against the Python decoder: decodes z at the current β. */
     decodeAt: async (z, beta = state.beta) => {
       const m = modelFor(discrete ? nearestValue(betaSpec.values, beta) : state.beta);
@@ -853,6 +888,7 @@ export default {
     };
     const ctl = await mount(el, traitletSource(model), {
       z: model.get("z"), beta: model.get("beta"), background: model.get("background"),
+      pixels: model.get("pixels"),
       onChange(s) {
         pending = s;
         if (!timer) timer = setTimeout(flush, 80);
@@ -864,14 +900,17 @@ export default {
     };
     const onBeta = () => { if (model.get("beta") !== ctl.state.beta) ctl.setBeta(model.get("beta")); };
     const onBg = () => ctl.setBackground(model.get("background"));
+    const onPixels = () => ctl.setPixels(model.get("pixels"));
     model.on("change:z", onZ);
     model.on("change:beta", onBeta);
     model.on("change:background", onBg);
+    model.on("change:pixels", onPixels);
     window.__latentPad = ctl;  // handy for debugging in the browser console
     return () => {
       model.off("change:z", onZ);
       model.off("change:beta", onBeta);
       model.off("change:background", onBg);
+      model.off("change:pixels", onPixels);
       ctl.destroy();
     };
   },
