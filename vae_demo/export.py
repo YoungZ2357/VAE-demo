@@ -4,8 +4,10 @@ both by the notebook widget (in memory, via traitlets) and by the static site (f
     manifest.json
     <name>/decoder.bin    decoder weights, per Linear layer: W [out, in] row-major, then b [out]
     <name>/mu_<i>.bin     float32 [n, 2] posterior means at eval β i (subsampled test set)
+    <name>/sigma_<i>.bin  float32 [n, 2] posterior std σ(x) of the same points (optional)
     <name>/labels.bin     uint8 [n]
     <name>/recon_mu_<i>.bin  float32 [k, 2] this model's encoder μ(x) for the shared recon images
+    <name>/recon_sigma_<i>.bin  float32 [k, 2] and σ(x)
     recon/images.bin      uint8 [k, 784] the same k test images for every model, as the encoders saw them
     recon/labels.bin      uint8 [k]
 
@@ -18,7 +20,8 @@ manifest:
                  "decoder": {"path", "dtype", "input": {"z": 2, "cond": k},
                              "layers": [{"type": "linear", "in", "out", "w", "b"}, {"type": "relu"}, ...,
                                         {"type": "sigmoid"}]},       # w/b: element offsets
-                 "evals": [{"beta", "recon", "kl", "mu", "n", "recon_mu"?}], "labels": path,
+                 "evals": [{"beta", "recon", "kl", "mu", "n", "sigma"?, "recon_mu"?, "recon_sigma"?}],
+                 "labels": path,
                  "history": {"epoch": [...], "train" | "test": {"recon": [...], "kl": [...]}} | null}],
      "recon": {"images", "labels", "n", "per_class"} | null}   # images grouped by digit, per_class each
 """
@@ -63,26 +66,25 @@ def _history_columns(history):
     return cols
 
 
-def _recon_images(binarize, per_class, data_dir):
-    """The first `per_class` test images of each digit, grouped by digit: (indices, x [k, 784])."""
-    from .data import get_test_set
-    x, y = get_test_set(data_dir, binarize)  # the draw training evaluated on (seed 0)
-    idx = np.concatenate([np.flatnonzero(y.numpy() == d)[:per_class] for d in range(10)])
-    return idx, x[idx], y.numpy()[idx]
+def _recon_indices(y, per_class):
+    """The first `per_class` test images of each digit, grouped by digit."""
+    return np.concatenate([np.flatnonzero(y == d)[:per_class] for d in range(10)])
 
 
 @torch.no_grad()
-def _encoder_means(run, x, beta):
+def _encoder_stats(run, x, beta):
+    """Encoder posterior q(z|x) = N(μ, diag σ²): (μ, σ), each [n, 2]."""
     p = next(run.model.parameters())
-    mu, _ = run.model.encode(x.to(p.device, p.dtype), run.model.cond_vec(beta))
-    return mu.cpu().numpy()
+    mu, logvar = run.model.encode(x.to(p.device, p.dtype), run.model.cond_vec(beta))
+    return mu.cpu().numpy(), torch.exp(0.5 * logvar).cpu().numpy()
 
 
 def build_bundle(runs, lim=3.0, n_points=3000, dtype="float32", seed=0, recon_per_class=3,
-                 data_dir="./data"):
+                 sigma=True, data_dir="./data"):
     """runs: {β: Run} of plain runs, a list of them, or a single conditional Run.
     recon_per_class: test images per digit pushed through every model's own encoder and decoder
-    (0 to skip; needs MNIST under data_dir). Returns (manifest dict, {path: bytes})."""
+    (0 to skip). sigma: also export the encoder's posterior std σ(x) of the scatter points and
+    recon images. Both need MNIST under data_dir. Returns (manifest dict, {path: bytes})."""
     if isinstance(runs, Run):
         runs = [runs]
     elif isinstance(runs, dict):
@@ -101,9 +103,13 @@ def build_bundle(runs, lim=3.0, n_points=3000, dtype="float32", seed=0, recon_pe
 
     rng = np.random.default_rng(seed)
     buffers, models = {}, []
-    recon = None
+    recon = test_x = None
+    if recon_per_class or sigma:
+        from .data import get_test_set
+        test_x, test_y = get_test_set(data_dir, next(iter(binarize)))  # the draw training evaluated on
     if recon_per_class:
-        r_idx, r_x, r_y = _recon_images(next(iter(binarize)), recon_per_class, data_dir)
+        r_idx = _recon_indices(test_y.numpy(), recon_per_class)
+        r_x, r_y = test_x[r_idx], test_y.numpy()[r_idx]
         buffers["recon/images.bin"] = (r_x * 255).round().to(torch.uint8).numpy().tobytes()
         buffers["recon/labels.bin"] = r_y.astype(np.uint8).tobytes()
         recon = {"images": "recon/images.bin", "labels": "recon/labels.bin", "n": len(r_idx),
@@ -123,14 +129,25 @@ def build_bundle(runs, lim=3.0, n_points=3000, dtype="float32", seed=0, recon_pe
             buffers[path] = r.latents[b][idx].astype("<f4").tobytes()
             m = r.metrics[b]
             evals.append({"beta": b, "recon": m["recon"], "kl": m["kl"], "mu": path, "n": len(idx)})
+            full = r.latents[b]
+            if sigma and len(full) == len(test_x):
+                mu, sd = _encoder_stats(r, test_x[idx], b)
+                if np.abs(full[idx] - mu).max() > 1e-3:
+                    warnings.warn(f"{name}: scatter points differ from the evaluated test set "
+                                  "(another binarization seed?); no σ(x) for the scatter")
+                else:
+                    evals[-1]["sigma"] = f"{name}/sigma_{i}.bin"
+                    buffers[evals[-1]["sigma"]] = sd.astype("<f4").tobytes()
             if recon:
-                mu = _encoder_means(r, r_x, b)
-                full = r.latents[b]
+                mu, sd = _encoder_stats(r, r_x, b)
                 if len(full) == len(r.labels) and np.abs(full[r_idx] - mu).max() > 1e-3:
                     warnings.warn(f"{name}: recon images differ from the evaluated test set "
                                   "(another binarization seed?); μ(x) recomputed from the encoder")
                 evals[-1]["recon_mu"] = f"{name}/recon_mu_{i}.bin"
                 buffers[evals[-1]["recon_mu"]] = mu.astype("<f4").tobytes()
+                if sigma:
+                    evals[-1]["recon_sigma"] = f"{name}/recon_sigma_{i}.bin"
+                    buffers[evals[-1]["recon_sigma"]] = sd.astype("<f4").tobytes()
         models.append({
             "name": name, "beta": r.beta, "cond": r.cond,
             "decoder": {"path": f"{name}/decoder.bin", "dtype": dtype,

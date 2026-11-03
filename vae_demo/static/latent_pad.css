@@ -64,6 +64,8 @@
 .lp-btn:hover:not(:disabled) { background: var(--lp-surface); }
 .lp-btn:disabled { color: var(--lp-muted-fg); opacity: 0.5; cursor: default; }
 .lp-check { display: flex; align-items: center; gap: 6px; margin-top: 6px; color: var(--lp-muted-fg); cursor: pointer; }
+.lp-check:has(input:disabled) { opacity: 0.5; cursor: default; }
+.lp-sigma { white-space: pre-line; margin-top: 4px; font-size: 12px; }
 
 .lp-beta { margin-top: 16px; }
 .lp-beta-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }

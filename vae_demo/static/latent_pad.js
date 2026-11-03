@@ -491,6 +491,8 @@ export async function mount(el, source, opts = {}) {
     hoverPrior: -1,
     pixels: opts.pixels || "mean",  // "mean": p(x|z) itself | "sample": x ~ Bernoulli(p)
     digits: digitMask(opts.digits),  // which classes the μ(x) scatter draws
+    sigma: !!opts.sigma,             // draw posterior ellipses q(z|x) = N(μ, σ²)
+    hoverPoint: -1,                  // scatter point under the pointer (σ mode only)
   };
   if (discrete) state.beta = nearestValue(betaSpec.values, state.beta);
   else state.beta = Math.min(betaSpec.max, Math.max(betaSpec.min, state.beta));
@@ -549,6 +551,10 @@ export async function mount(el, source, opts = {}) {
     onclick: () => { drawNoise(); if (cur) { drawOut(); renderPrior(); } if (recon) recon.draw(); } }, "resample");
   const priorToggle = h("input", { type: "checkbox" });
   priorToggle.addEventListener("change", () => { state.showPrior = priorToggle.checked; drawPad(); });
+  const sigmaToggle = h("input", { type: "checkbox" });
+  sigmaToggle.addEventListener("change", () => setSigma(sigmaToggle.checked, true));
+  const sigmaText = h("div", { class: "lp-muted lp-sigma" });
+  const hasSigma = manifest.models.some((m) => m.evals.some((e) => e.sigma || e.recon_sigma));
 
   const root = h("div", { class: "lp-root" },
     h("div", { class: "lp-main" },
@@ -558,6 +564,9 @@ export async function mount(el, source, opts = {}) {
         h("div", { class: "lp-label lp-gap" }, "background"),
         h("div", { class: "lp-seg" }, ...bgButtons),
         h("label", { class: "lp-check" }, priorToggle, " mark prior samples on the plane"),
+        h("label", { class: "lp-check", title: hasSigma ? "" : "this bundle has no σ(x); re-export it" },
+          sigmaToggle, " posterior ellipses q(z|x) = N(μ, σ²)"),
+        sigmaText,
         h("div", { class: "lp-label lp-gap" }, "pixels (all decoded images)"),
         h("div", { class: "lp-row" }, h("div", { class: "lp-seg" }, ...pixelButtons), resampleBtn))),
     h("div", { class: "lp-beta" },
@@ -601,12 +610,21 @@ export async function mount(el, source, opts = {}) {
   function nearestEval(m, beta) {
     return m.evals.reduce((a, e) => Math.abs(Math.log(e.beta / beta)) < Math.abs(Math.log(a.beta / beta)) ? e : a);
   }
+  const f32 = (path) => path ? load("buf:" + path, () => source.getBuffer(path).then((b) => new Float32Array(b)))
+                             : Promise.resolve(null);
   async function latentsFor(m, ev) {
-    const [mu, lab] = await Promise.all([
-      load("buf:" + ev.mu, () => source.getBuffer(ev.mu).then((b) => new Float32Array(b))),
+    const [mu, lab, sigma] = await Promise.all([
+      f32(ev.mu),
       load("buf:" + m.labels, () => source.getBuffer(m.labels).then((b) => new Uint8Array(b))),
+      f32(ev.sigma),
     ]);
-    return { mu, lab };
+    return { mu, lab, sigma };
+  }
+  /** μ(x), σ(x) of the shared recon images under this eval, or null if the bundle lacks them. */
+  async function reconStatsFor(ev) {
+    if (!ev.recon_mu || !ev.recon_sigma) return null;
+    const [mu, sigma] = await Promise.all([f32(ev.recon_mu), f32(ev.recon_sigma)]);
+    return { mu, sigma };
   }
   function metricsAt(m, beta) {
     if (discrete || m.evals.length === 1) return { ...m.evals[0], exact: true };
@@ -634,7 +652,7 @@ export async function mount(el, source, opts = {}) {
                                 onclick: () => setBeta(r.beta, true) }, `β = ${fmtBeta(r.beta)}`, score);
       return { r, canvas, score, el: h("div", { class: "lp-recon-row" }, btn, canvas) };
     });
-    const other = h("button", { type: "button", class: "lp-btn", onclick: () => { set = (set + 1) % per; draw(); } },
+    const other = h("button", { type: "button", class: "lp-btn", onclick: () => { set = (set + 1) % per; draw(); if (state.sigma) drawPad(); } },
       "other images");
     other.disabled = per < 2;
     const el = h("div", { class: "lp-recon" },
@@ -702,7 +720,8 @@ export async function mount(el, source, opts = {}) {
       : null;
     if (io) io.observe(el);
     const idle = setTimeout(run, io ? 4000 : 0);
-    return { el, draw, highlight, destroy: () => { if (io) io.disconnect(); clearTimeout(idle); } };
+    return { el, draw, highlight, get set() { return set; },
+             destroy: () => { if (io) io.disconnect(); clearTimeout(idle); } };
   }
 
   // ---- current β assets
@@ -716,9 +735,11 @@ export async function mount(el, source, opts = {}) {
     try {
       const dec = await decoderFor(m);
       const ev = nearestEval(m, beta);
-      const lat = await latentsFor(m, ev);
+      const [lat, rec] = await Promise.all([latentsFor(m, ev), reconStatsFor(ev)]);
       if (v !== version) return;  // a newer β arrived meanwhile
-      cur = { m, dec, ev, lat, c: m.cond ? betaFeatures(beta, m.cond) : null };
+      cur = { m, dec, ev, lat, rec, sigmaMed: sigmaMedian(lat.sigma || (rec && rec.sigma)),
+              c: m.cond ? betaFeatures(beta, m.cond) : null };
+      state.hoverPoint = -1;
       renderBackground();
       renderPrior();
       drawPad();
@@ -824,6 +845,8 @@ export async function mount(el, source, opts = {}) {
       }
     }
 
+    if (state.sigma) drawEllipses(g, S, unit, dpr, dark, ink);
+
     // the cursor
     const [x, y] = toPx(state.z[0], state.z[1], S), R = 9 * dpr;
     g.lineWidth = 4 * dpr; g.strokeStyle = dark ? "#000" : "#fff";
@@ -833,6 +856,50 @@ export async function mount(el, source, opts = {}) {
     g.moveTo(x - R * 1.8, y); g.lineTo(x - R * 0.5, y); g.moveTo(x + R * 0.5, y); g.lineTo(x + R * 1.8, y);
     g.moveTo(x, y - R * 1.8); g.lineTo(x, y - R * 0.5); g.moveTo(x, y + R * 0.5); g.lineTo(x, y + R * 1.8);
     g.stroke();
+  }
+
+  // Posterior q(z|x) = N(μ, diag σ²) is axis-aligned: 1σ solid, 2σ dashed. With small β the
+  // ellipses are far below a pixel; the centre dot keeps each image findable regardless.
+  function ellipse(g, mu1, mu2, s1, s2, S, unit, dpr, color, halo, strong) {
+    const [x, y] = toPx(mu1, mu2, S);
+    for (const [k, dash] of [[1, []], [2, [4 * dpr, 3 * dpr]]]) {
+      g.setLineDash(dash);
+      g.beginPath(); g.ellipse(x, y, k * s1 * unit, k * s2 * unit, 0, 0, 2 * Math.PI);
+      g.lineWidth = (strong ? 4.5 : 3.5) * dpr; g.strokeStyle = halo; g.stroke();
+      g.lineWidth = (strong ? 2.5 : 1.6) * dpr; g.strokeStyle = color; g.stroke();
+    }
+    g.setLineDash([]);
+    g.beginPath(); g.arc(x, y, (strong ? 4 : 3.2) * dpr, 0, 2 * Math.PI);
+    g.fillStyle = color; g.fill(); g.lineWidth = 1.5 * dpr; g.strokeStyle = halo; g.stroke();
+  }
+  function drawEllipses(g, S, unit, dpr, dark, ink) {
+    if (!cur) return;
+    const halo = dark ? "rgba(0,0,0,0.85)" : css("--lp-pad-bg") || "#fff";
+    if (cur.rec && recon) {  // the recon panel's current images, one per digit
+      const per = manifest.recon.per_class, { mu, sigma } = cur.rec;
+      for (let d = 0; d < 10; d++) {
+        if (!state.digits[d]) continue;
+        const j = d * per + recon.set;
+        ellipse(g, mu[2 * j], mu[2 * j + 1], sigma[2 * j], sigma[2 * j + 1], S, unit, dpr, TAB10[d], halo, false);
+      }
+    }
+    const i = state.hoverPoint, { mu, sigma, lab } = cur.lat;
+    if (i >= 0 && sigma) {
+      ellipse(g, mu[2 * i], mu[2 * i + 1], sigma[2 * i], sigma[2 * i + 1], S, unit, dpr, TAB10[lab[i]], ink, true);
+    }
+  }
+  /** Nearest shown scatter point within a few pixels of the pointer, or -1. */
+  function pointAt(e) {
+    if (!state.sigma || !cur || !cur.lat.sigma || state.background !== "scatter") return -1;
+    const r = pad.getBoundingClientRect(), px = e.clientX - r.left, py = e.clientY - r.top;
+    const { mu, lab } = cur.lat;
+    let best = -1, bd = 8 * 8;
+    for (let i = 0; i < lab.length; i++) {
+      if (!state.digits[lab[i]]) continue;
+      const [x, y] = toPx(mu[2 * i], mu[2 * i + 1], r.width), d = (x - px) ** 2 + (y - py) ** 2;
+      if (d < bd) { bd = d; best = i; }
+    }
+    return best;
   }
 
   function drawOut() {
@@ -862,6 +929,21 @@ export async function mount(el, source, opts = {}) {
     for (const btn of bgButtons) btn.classList.toggle("lp-on", btn.dataset.bg === state.background);
     for (const btn of pixelButtons) btn.classList.toggle("lp-on", btn.dataset.pixels === state.pixels);
     resampleBtn.disabled = state.pixels !== "sample";
+    sigmaToggle.checked = state.sigma;
+    sigmaToggle.disabled = !hasSigma;
+    sigmaText.textContent = "";
+    if (state.sigma && cur && cur.sigmaMed) {
+      const [a, b] = cur.sigmaMed, px = (pad.clientWidth || 400) / (2 * lim);
+      let t = `median σ = (${a.toFixed(3)}, ${b.toFixed(3)}) · 1σ ≈ ${(px * (a + b) / 2).toFixed(1)} px here`;
+      const i = state.hoverPoint, { mu, sigma, lab } = cur.lat;
+      if (i >= 0 && sigma) {
+        t += `\nthis ${lab[i]}: μ = (${mu[2 * i].toFixed(2)}, ${mu[2 * i + 1].toFixed(2)}), ` +
+             `σ = (${sigma[2 * i].toFixed(3)}, ${sigma[2 * i + 1].toFixed(3)})`;
+      } else if (cur.lat.sigma && state.background === "scatter") {
+        t += "\nhover a scatter point for its own ellipse";
+      }
+      sigmaText.textContent = t;
+    }
     for (const btn of digitButtons) {
       const on = state.digits[+btn.dataset.d];
       btn.classList.toggle("lp-off", !on);
@@ -883,7 +965,7 @@ export async function mount(el, source, opts = {}) {
 
   const notify = () => opts.onChange && opts.onChange({ z: [...state.z], beta: state.beta,
                                                          background: state.background, pixels: state.pixels,
-                                                         digits: digitList(state.digits) });
+                                                         digits: digitList(state.digits), sigma: state.sigma });
   const clampZ = (v) => Math.max(-lim, Math.min(lim, v));
 
   function setZ(z, fromUser = false) {
@@ -920,6 +1002,15 @@ export async function mount(el, source, opts = {}) {
     updateText();
     if (fromUser) notify();
   }
+  function setSigma(on, fromUser = false) {
+    on = !!on;
+    if (on === state.sigma) return;
+    state.sigma = on;
+    state.hoverPoint = -1;
+    drawPad();
+    updateText();
+    if (fromUser) notify();
+  }
   function setBackground(b, fromUser = false) {
     if (b === state.background) return;
     state.background = b;
@@ -938,7 +1029,14 @@ export async function mount(el, source, opts = {}) {
   pad.addEventListener("pointerdown", (e) => {
     dragging = true; pad.setPointerCapture(e.pointerId); pad.focus(); setZ(zFromEvent(e), true);
   });
-  pad.addEventListener("pointermove", (e) => { if (dragging) setZ(zFromEvent(e), true); });
+  pad.addEventListener("pointermove", (e) => {
+    if (dragging) { setZ(zFromEvent(e), true); return; }
+    const i = pointAt(e);
+    if (i !== state.hoverPoint) { state.hoverPoint = i; drawPad(); updateText(); }
+  });
+  pad.addEventListener("pointerleave", () => {
+    if (state.hoverPoint >= 0) { state.hoverPoint = -1; drawPad(); updateText(); }
+  });
   const end = () => { dragging = false; };
   pad.addEventListener("pointerup", end);
   pad.addEventListener("pointercancel", end);
@@ -979,6 +1077,7 @@ export async function mount(el, source, opts = {}) {
     setBeta: (b) => setBeta(b),
     setBackground: (b) => setBackground(b),
     setPixels: (m) => setPixels(m),
+    setSigma: (on) => setSigma(on),
     /** digits: list of classes to draw in the scatter, e.g. [0, 1, 7] */
     setDigits: (d) => setDigits(d),
     /** For checking against the Python decoder: decodes z at the current β. */
@@ -1000,6 +1099,16 @@ function digitMask(list) {
 }
 const digitList = (mask) => mask.flatMap((on, d) => (on ? [d] : []));
 
+/** Per-dimension median of σ [n * 2], or null. */
+function sigmaMedian(sigma) {
+  if (!sigma) return null;
+  const n = sigma.length / 2;
+  return [0, 1].map((k) => {
+    const v = Float32Array.from({ length: n }, (_, i) => sigma[2 * i + k]).sort();
+    return v[n >> 1];
+  });
+}
+
 function nearestValue(values, v) {
   return values.reduce((a, b) => (Math.abs(Math.log(b / v)) < Math.abs(Math.log(a / v)) ? b : a));
 }
@@ -1018,7 +1127,7 @@ export default {
     };
     const ctl = await mount(el, traitletSource(model), {
       z: model.get("z"), beta: model.get("beta"), background: model.get("background"),
-      pixels: model.get("pixels"), digits: model.get("digits"),
+      pixels: model.get("pixels"), digits: model.get("digits"), sigma: model.get("sigma"),
       onChange(s) {
         pending = s;
         if (!timer) timer = setTimeout(flush, 80);
@@ -1032,11 +1141,13 @@ export default {
     const onBg = () => ctl.setBackground(model.get("background"));
     const onPixels = () => ctl.setPixels(model.get("pixels"));
     const onDigits = () => ctl.setDigits(model.get("digits"));
+    const onSigma = () => ctl.setSigma(model.get("sigma"));
     model.on("change:z", onZ);
     model.on("change:beta", onBeta);
     model.on("change:background", onBg);
     model.on("change:pixels", onPixels);
     model.on("change:digits", onDigits);
+    model.on("change:sigma", onSigma);
     window.__latentPad = ctl;  // handy for debugging in the browser console
     return () => {
       model.off("change:z", onZ);
@@ -1044,6 +1155,7 @@ export default {
       model.off("change:background", onBg);
       model.off("change:pixels", onPixels);
       model.off("change:digits", onDigits);
+      model.off("change:sigma", onSigma);
       ctl.destroy();
     };
   },
